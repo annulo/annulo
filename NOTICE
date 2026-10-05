@@ -1,0 +1,11 @@
+Annulo
+Copyright 2026 The Annulo Authors
+
+This product includes software developed by third parties:
+
+- Pi (third_party/pi) — Copyright (c) 2026 Sky Valley, MIT License.
+  Modified for Annulo; the changes are described in third_party/pi/SHUTTLE_PATCH.md.
+- creght-cli sitesync (github.com/creght-dev/creght-cli/pkg/sitesync) — Copyright 2026 The Creght Authors, Apache License 2.0.
+- talizen (loaded by project pages from a public CDN at runtime) — MIT License.
+
+Other Go and npm dependencies carry their own licenses, listed in go.mod, web/package.json and electron/package.json.

@@ -1,0 +1,309 @@
+[
+  {
+    "key": "projects",
+    "name": "项目",
+    "desc": "要运营的一个品牌或业务，下面挂它的渠道",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "项目名称"
+        },
+        "profile": {
+          "type": "string",
+          "description": "定位：做什么、卖什么、和同行比有什么不同"
+        },
+        "audience": {
+          "type": "string",
+          "description": "目标客户：谁、在哪、关心什么"
+        },
+        "tone": {
+          "type": "string",
+          "description": "内容语气"
+        },
+        "keywords": {
+          "type": "string",
+          "description": "核心关键词，逗号分隔"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "创建时间 ISO8601"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "key": "channels",
+    "name": "渠道",
+    "desc": "项目要运营的地方：独立站、小红书、抖音、X…",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "渠道类型：creght_site / xiaohongshu / douyin / x / wechat_mp / linkedin"
+        },
+        "name": {
+          "type": "string",
+          "description": "显示名"
+        },
+        "project_id": {
+          "type": "string",
+          "description": "creght_site：站点所在的 creght 项目"
+        },
+        "site_id": {
+          "type": "string",
+          "description": "creght_site：站点 id"
+        },
+        "platform_uid": {
+          "type": "string",
+          "description": "社媒渠道：平台账号 id"
+        },
+        "profile": {
+          "type": "string",
+          "description": "渠道定位：目标读者、语气、不碰的话题（写作时读）"
+        },
+        "login_status": {
+          "type": "string",
+          "description": "社媒渠道：ok / expired / unknown，本地 agent 回写"
+        },
+        "preview_url": {
+          "type": "string",
+          "description": "独立站：访问地址（creght 站点是预览地址）"
+        },
+        "ops_project_id": {
+          "type": "string",
+          "description": "所属的运营项目（projects 表）"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
+    }
+  },
+  {
+    "key": "topics",
+    "name": "选题",
+    "desc": "内容选题池，也是选题记忆，避免重复",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "所属项目"
+        },
+        "title": {
+          "type": "string",
+          "description": "选题标题"
+        },
+        "angle": {
+          "type": "string",
+          "description": "切入点 / 写作思路"
+        },
+        "keywords": {
+          "type": "string",
+          "description": "目标关键词，逗号分隔"
+        },
+        "source": {
+          "type": "string",
+          "description": "来源：manual / agent / search / geo"
+        },
+        "status": {
+          "type": "string",
+          "description": "idea / writing / done / dropped"
+        },
+        "article_id": {
+          "type": "string",
+          "description": "写成的文章"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "创建时间 ISO8601"
+        }
+      },
+      "required": [
+        "project_id",
+        "title"
+      ]
+    }
+  },
+  {
+    "key": "articles",
+    "name": "文章",
+    "desc": "为渠道写的文章，审核通过后发布到独立站 CMS",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "所属项目"
+        },
+        "channel_id": {
+          "type": "string",
+          "description": "发布到哪个渠道"
+        },
+        "topic_id": {
+          "type": "string",
+          "description": "来自哪个选题"
+        },
+        "title": {
+          "type": "string",
+          "description": "标题"
+        },
+        "summary": {
+          "type": "string",
+          "description": "摘要"
+        },
+        "body": {
+          "type": "string",
+          "description": "正文 HTML"
+        },
+        "keywords": {
+          "type": "string",
+          "description": "关键词，逗号分隔"
+        },
+        "status": {
+          "type": "string",
+          "description": "draft / pending_review / published / rejected"
+        },
+        "review_note": {
+          "type": "string",
+          "description": "审核意见"
+        },
+        "cms_collection": {
+          "type": "string",
+          "description": "发布到的 CMS 集合 key"
+        },
+        "cms_id": {
+          "type": "string",
+          "description": "CMS 内容 id"
+        },
+        "url": {
+          "type": "string",
+          "description": "发布后的访问地址"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "创建时间 ISO8601"
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "更新时间 ISO8601"
+        },
+        "published_at": {
+          "type": "string",
+          "description": "发布时间 ISO8601"
+        }
+      },
+      "required": [
+        "project_id",
+        "title"
+      ]
+    }
+  },
+  {
+    "key": "site_issues",
+    "name": "站点问题",
+    "desc": "站点体检发现的问题",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "所属项目"
+        },
+        "channel_id": {
+          "type": "string",
+          "description": "哪个独立站渠道"
+        },
+        "run_id": {
+          "type": "string",
+          "description": "哪次体检发现的"
+        },
+        "check": {
+          "type": "string",
+          "description": "检查项 key"
+        },
+        "severity": {
+          "type": "string",
+          "description": "high / medium / low"
+        },
+        "title": {
+          "type": "string",
+          "description": "问题"
+        },
+        "detail": {
+          "type": "string",
+          "description": "说明和修复建议"
+        },
+        "pages": {
+          "type": "string",
+          "description": "涉及的页面，JSON 数组字符串"
+        },
+        "status": {
+          "type": "string",
+          "description": "open / fixing / fixed / ignored"
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "更新时间 ISO8601"
+        }
+      },
+      "required": [
+        "channel_id",
+        "check",
+        "title"
+      ]
+    }
+  },
+  {
+    "key": "audit_runs",
+    "name": "体检记录",
+    "desc": "每次站点体检的结果",
+    "json_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "所属项目"
+        },
+        "channel_id": {
+          "type": "string",
+          "description": "哪个独立站渠道"
+        },
+        "target_url": {
+          "type": "string",
+          "description": "体检的地址"
+        },
+        "pages_checked": {
+          "type": "integer",
+          "description": "检查的页面数"
+        },
+        "score": {
+          "type": "integer",
+          "description": "得分 0-100"
+        },
+        "issues": {
+          "type": "integer",
+          "description": "问题数"
+        },
+        "started_at": {
+          "type": "string",
+          "description": "开始时间 ISO8601"
+        },
+        "finished_at": {
+          "type": "string",
+          "description": "结束时间 ISO8601"
+        }
+      },
+      "required": [
+        "channel_id"
+      ]
+    }
+  }
+]

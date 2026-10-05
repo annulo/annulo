@@ -1,0 +1,151 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/sky-valley/pi/internal/jstext"
+)
+
+// hasExplicitAPIKey is compat.ts hasExplicitApiKey: a key that is blank as
+// JavaScript trims is no key.
+func hasExplicitAPIKey(key string) bool {
+	return jstext.Trim(key) != ""
+}
+
+// anthropicAuthTokenActive reports whether the anthropic bearer auth token is
+// set for this request. When it is, the compat path leaves APIKey unresolved so
+// the provider emits it as an Authorization header rather than x-api-key.
+func anthropicAuthTokenActive(model *Model, env map[string]string) bool {
+	return model.Provider == "anthropic" && ProviderEnvValue(AnthropicAuthTokenEnv, env) != ""
+}
+
+// scopedEnv returns the per-stream provider env overrides, or nil. Nil-safe so
+// callers can pass options that may be nil. These overrides are consulted ahead
+// of the OS environment when resolving the API key (pi 8eeaa2bc).
+func scopedEnv(opts *StreamOptions) map[string]string {
+	if opts == nil {
+		return nil
+	}
+	return opts.Env
+}
+
+func withEnvAPIKey(model *Model, opts *StreamOptions) *StreamOptions {
+	if opts != nil && hasExplicitAPIKey(opts.APIKey) {
+		return opts
+	}
+	// ANTHROPIC_AUTH_TOKEN is a bearer credential the provider applies as an
+	// Authorization header, ahead of the env api keys (pi 24e5cc04). Leave APIKey
+	// empty so it never resolves to x-api-key; StreamAnthropic reads the token and
+	// emits the bearer. An explicit key (handled above) still wins over it.
+	if anthropicAuthTokenActive(model, scopedEnv(opts)) {
+		return opts
+	}
+	key := GetEnvApiKey(model.Provider, scopedEnv(opts))
+	// The ambient-auth marker means "authenticated without an explicit key";
+	// never inject it as a real API key (pi 850c210b).
+	if key == "" || key == ambientAuthMarker {
+		return opts
+	}
+	if opts == nil {
+		return &StreamOptions{ProviderRequestOptions: ProviderRequestOptions{APIKey: key}}
+	}
+	clone := *opts
+	clone.APIKey = key
+	return &clone
+}
+
+func withEnvAPIKeySimple(model *Model, opts *SimpleStreamOptions) *SimpleStreamOptions {
+	if opts != nil && hasExplicitAPIKey(opts.APIKey) {
+		return opts
+	}
+	var simpleEnv map[string]string
+	if opts != nil {
+		simpleEnv = opts.Env
+	}
+	if anthropicAuthTokenActive(model, simpleEnv) {
+		return opts
+	}
+	key := GetEnvApiKey(model.Provider, simpleEnv)
+	if key == "" || key == ambientAuthMarker {
+		return opts
+	}
+	if opts == nil {
+		return &SimpleStreamOptions{
+			StreamOptions: StreamOptions{ProviderRequestOptions: ProviderRequestOptions{APIKey: key}},
+		}
+	}
+	clone := *opts
+	clone.APIKey = key
+	return &clone
+}
+
+func resolveProvider(api Api) (ApiProvider, error) {
+	p, ok := GetApiProvider(api)
+	if !ok {
+		return ApiProvider{}, fmt.Errorf("No API provider registered for api: %s", api)
+	}
+	return p, nil
+}
+
+// Stream streams an assistant response using provider-native options.
+//
+// Divergence from pi (deliberate, G3): pi's stream() throws synchronously when
+// no API provider is registered for model.Api (stream.ts resolveApiProvider).
+// This Go port instead encodes the failure in the returned stream as a
+// terminal "error" event, keeping a single return value and a uniform
+// "failures live in the stream" contract for callers. Same applies to
+// StreamSimple.
+//
+// The request is normalized once here (NormalizeContext): providers receive a
+// transcript whose leading system message carries req.SystemPrompt and
+// req.Tools (pi compat.ts stream, upstream 9e05370b2).
+func Stream(ctx context.Context, model *Model, req Context, opts *StreamOptions) *AssistantMessageEventStream {
+	transcript := NormalizeContext(req)
+	p, err := resolveProvider(model.Api)
+	if err != nil {
+		return ErrorStream(model, err)
+	}
+	return p.Stream(ctx, model, transcript, withEnvAPIKey(model, opts))
+}
+
+// Complete runs Stream and waits for the final assistant message.
+func Complete(ctx context.Context, model *Model, req Context, opts *StreamOptions) *AssistantMessage {
+	return Stream(ctx, model, req, opts).Result()
+}
+
+// StreamSimple streams an assistant response using unified reasoning options.
+// See Stream for the deliberate unknown-api divergence from pi (errors are
+// encoded in the stream, not thrown), and for the normalization it applies.
+func StreamSimple(ctx context.Context, model *Model, req Context, opts *SimpleStreamOptions) *AssistantMessageEventStream {
+	transcript := NormalizeContext(req)
+	p, err := resolveProvider(model.Api)
+	if err != nil {
+		return ErrorStream(model, err)
+	}
+	return p.StreamSimple(ctx, model, transcript, withEnvAPIKeySimple(model, opts))
+}
+
+// CompleteSimple runs StreamSimple and waits for the final assistant message.
+func CompleteSimple(ctx context.Context, model *Model, req Context, opts *SimpleStreamOptions) *AssistantMessage {
+	return StreamSimple(ctx, model, req, opts).Result()
+}
+
+// ErrorStream returns a closed stream carrying a terminal error event. Per the
+// stream contract, a failure that pi raises by throwing out of stream setup —
+// provider resolution here, an unusable option in a provider's StreamSimple —
+// is encoded in the stream rather than returned alongside it.
+func ErrorStream(model *Model, err error) *AssistantMessageEventStream {
+	s := NewAssistantMessageEventStream()
+	msg := &AssistantMessage{
+		Api:          model.Api,
+		Provider:     model.Provider,
+		Model:        model.ID,
+		StopReason:   StopError,
+		ErrorMessage: err.Error(),
+		Timestamp:    nowMillis(),
+	}
+	s.Push(AssistantMessageEvent{Type: EventError, Reason: StopError, Error: msg})
+	s.End()
+	return s
+}

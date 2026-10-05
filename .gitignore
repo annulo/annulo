@@ -1,0 +1,13 @@
+/bin/
+/web/node_modules/
+/electron/node_modules/
+/web/dist/
+/web/*.tsbuildinfo
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep
+.env
+/dist/
+.DS_Store
+/shuttle
+/windows/rsrc_windows_*.syso
+/.secrets/

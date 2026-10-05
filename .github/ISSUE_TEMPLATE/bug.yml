@@ -1,0 +1,15 @@
+name: Bug report
+description: Something doesn't work
+labels: [bug]
+body:
+  - type: textarea
+    attributes: { label: What happened, description: What you did, what you expected and what you saw instead }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Steps to reproduce }
+  - type: input
+    attributes: { label: Version, description: "Settings → About" }
+  - type: dropdown
+    attributes: { label: OS, options: [macOS (Apple silicon), macOS (Intel), Windows x64, Windows ARM64, Other] }
+  - type: textarea
+    attributes: { label: Logs, description: "Settings → About → copy diagnostics, or ~/.annulo/logs/app.log", render: text }

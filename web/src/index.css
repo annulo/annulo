@@ -1,0 +1,266 @@
+@import "tailwindcss";
+
+/*
+  设计令牌照搬 talizen 平台（folia-web/src/index.css）：shadcn 的中性灰阶 + 平台蓝，
+  深浅两套，<html data-theme="dark|light"> 切换，默认跟随系统、没有偏好时用深色。
+  Shuttle 和平台编辑器看起来是一个产品，改颜色先改平台那边。
+*/
+@custom-variant dark (&:is([data-theme="dark"] *, [data-kb-theme="dark"] *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-text: var(--primary-text);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--surface-foreground);
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-code-highlight: var(--code-highlight);
+  --color-code-number: var(--code-number);
+  --color-selection: var(--selection);
+  --color-selection-foreground: var(--selection-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+}
+
+:root {
+  --radius: 0.625rem;
+  /* 软键盘遮挡高度，由 startKeyboardInsetTracking 按 visualViewport 实时写入，没键盘时是 0 */
+  --keyboard-inset: 0px;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.546 0.245 262.881);
+  --primary-text: var(--primary);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  /* 边框颜色 border-border, 改为 slate-100 */
+  --border: oklch(96.8% 0.007 247.896);
+  /* 输入框的边框颜色 border-input */
+  --input: oklch(92.9% 0.013 255.508);
+  /*
+   * 输入框/控件的底色 bg-input-background：亮色下不填充，深色下用极淡的白。
+   *
+   * 输入框类组件（TextField / Select / Combobox / Checkbox）直接用无前缀的
+   * bg-input-background：cx 走 twMerge，调用点自带的 bg-* 会整体覆盖它，明暗一致，
+   * 不会出现「亮色按调用点、深色被基础组件强行改回去」的割裂。
+   *
+   * Button(outline) / TabsIndicator 这类亮色深色本就要两种不同底色的组件仍写
+   * dark:bg-input-background；调用点若要让自己的颜色在深色也生效，得写成 bg-xxx!。
+   */
+  --input-background: transparent;
+  /* 发光边框颜色 focus-visible:border-ring */
+  --ring: oklch(0.546 0.245 262.881);
+  --sidebar: oklch(0.97 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.546 0.245 262.881);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(1 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  /* 对话里画图的系列色（ChatChart），按顺序取，不循环；深浅各一套、都过了色觉校验 */
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-4: #eda100;
+  --vis-tooltip-padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2.5);
+  --vis-tooltip-box-shadow: var(--shadow-xl);
+  --vis-tooltip-background-color: var(--color-background);
+  --vis-tooltip-border-color: var(--color-border);
+  --vis-tooltip-border-radius: var(--radius-lg);
+  --vis-tooltip-text-color: var(--color-foreground);
+  --vis-font-family: var(--font-sans);
+  --vis-legend-label-color: var(--vis-tooltip-text-color);
+}
+
+[data-theme='dark'],
+[data-kb-theme='dark'] {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.546 0.245 262.881);
+  --primary-text: oklch(0.8 0.16 262.881);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  /* 等价于原来各处写的 dark:bg-input/30（--input 的 15% 再取 30%） */
+  --input-background: oklch(1 0 0 / 4.5%);
+  --ring: oklch(0.546 0.245 262.881);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.546 0.245 262.881);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+}
+
+
+@theme inline {
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --ok: oklch(0.627 0.17 149.2);
+  --warn: oklch(0.705 0.16 70.1);
+  /* 图表：用量的三个序列（输入 / 缓存命中 / 输出），dataviz 校验过的分类色 */
+  --series-1: #2a78d6;
+  --series-2: #1baf7a;
+  --series-3: #eb6834;
+  /* 热力图：平台蓝的单色阶，0 格用中性灰 */
+  --heat-0: oklch(0.94 0 0);
+  --heat-1: #b7d3f6;
+  --heat-2: #6da7ec;
+  --heat-3: #2a78d6;
+  --heat-4: #184f95;
+}
+[data-theme='dark'] {
+  --ok: oklch(0.723 0.17 149.6);
+  --warn: oklch(0.795 0.16 80);
+  --series-1: #3987e5;
+  --series-2: #199e70;
+  --series-3: #d95926;
+  --heat-0: oklch(0.24 0 0);
+  --heat-1: #184f95;
+  --heat-2: #256abf;
+  --heat-3: #3987e5;
+  --heat-4: #86b6ef;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    margin: 0;
+  }
+  button { cursor: pointer; }
+}
+
+/* 细滚动条，和平台 .custom-scrollbar 一致 */
+.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--muted-foreground) 28%, transparent); border-radius: 10px; border: 0; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--muted-foreground) 50%, transparent); }
+
+/* 顶栏标签条的横向滚动条：细，平时隐藏，只在滚动时（data-scrolling）和鼠标指着它时出现 */
+.tab-scroll::-webkit-scrollbar { height: 4px; }
+.tab-scroll::-webkit-scrollbar-track { background: transparent; }
+.tab-scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; }
+.tab-scroll[data-scrolling]::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--muted-foreground) 35%, transparent); }
+.tab-scroll::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--muted-foreground) 55%, transparent); }
+
+/* agent 回复的 Markdown */
+.md { line-height: 1.65; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0.5em 0; }
+.md h1, .md h2, .md h3 { font-weight: 600; margin: 1em 0 0.4em; line-height: 1.35; }
+.md h1 { font-size: 1.15em; } .md h2 { font-size: 1.08em; } .md h3 { font-size: 1em; }
+.md ul, .md ol { margin: 0.5em 0; padding-left: 1.3em; }
+.md ul { list-style: disc; } .md ol { list-style: decimal; }
+.md li { margin: 0.2em 0; }
+.md a { color: var(--primary-text); text-decoration: underline; text-underline-offset: 3px; }
+.md strong { font-weight: 600; }
+.md code { font-family: var(--font-mono); font-size: 0.88em; background: var(--muted); padding: 0.1em 0.35em; border-radius: 4px; }
+.md pre { background: var(--muted); padding: 0.75em 0.9em; border-radius: var(--radius); overflow-x: auto; margin: 0.6em 0; }
+.md pre code { background: none; padding: 0; }
+.md table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.92em; display: block; overflow-x: auto; }
+/* 单元格不继承 .md 的 overflow-wrap: anywhere，否则列被挤到一个字宽，数字、单词断成几行；放不下就横向滚动 */
+.md th, .md td { border: 1px solid var(--border); padding: 0.35em 0.65em; text-align: left; vertical-align: top; overflow-wrap: normal; font-variant-numeric: tabular-nums; }
+.md td { min-width: 4em; }
+.md th { background: var(--muted); font-weight: 600; white-space: nowrap; }
+.md blockquote { border-left: 2px solid var(--border); padding-left: 0.8em; color: var(--muted-foreground); margin: 0.6em 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* 对话反馈的小气泡（components/Feedback.tsx）：弹出、点赞时大拇指弹一下冒小爱心、点踩时哭脸掉眼泪。减少动态时上面那条规则会把动画关掉，只剩文字 */
+@keyframes fb-pop { from { opacity: 0; transform: translateY(6px) scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes fb-out { to { opacity: 0; transform: translateY(4px) scale(0.97); } }
+@keyframes fb-bounce { 0%, 100% { transform: translateY(0) rotate(0); } 25% { transform: translateY(-7px) rotate(-14deg); } 50% { transform: translateY(0) rotate(6deg); } 70% { transform: translateY(-2px) rotate(-3deg); } }
+@keyframes fb-heart { 0% { opacity: 0; transform: translate(0, 4px) scale(0.5); } 25% { opacity: 1; } 100% { opacity: 0; transform: translate(var(--dx), -26px) scale(1.05); } }
+@keyframes fb-tear { 0% { opacity: 0; transform: translateY(-1px) scaleY(0.6); } 25% { opacity: 1; } 100% { opacity: 0; transform: translateY(11px) scaleY(1); } }
+@keyframes fb-sob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1.5px); } }
+
+/* 滚动条：细、平时很淡，悬停才加深（深浅主题跟着 --border / --input 走） */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--muted-foreground) 28%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--muted-foreground) 50%, transparent); background-clip: padding-box; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--muted-foreground) 28%, transparent) transparent; }
+}

@@ -1,0 +1,9 @@
+name: Feature request
+description: A new primitive or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes: { label: What you want to do, description: The task you're trying to get done, not just the feature }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Why Annulo and not a template, description: Would this make sense for a different business or platform? See CONTRIBUTING.md }

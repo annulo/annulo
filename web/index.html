@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/_shuttle/annulo-light.svg" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="/_shuttle/annulo-dark.svg" media="(prefers-color-scheme: dark)">
+  <title>Annulo · 运营后台</title>
+  <script>
+    // 和平台编辑器同一个规则：用户选过就用选的，否则跟随系统；在渲染前设好，避免闪一下白
+    (function () {
+      var t = 'dark'
+      try {
+        var saved = localStorage.getItem('shuttle.theme')
+        if (saved === 'light' || saved === 'dark') t = saved
+        else if (window.matchMedia('(prefers-color-scheme: light)').matches) t = 'light'
+      } catch (e) {}
+      var el = document.documentElement
+      el.setAttribute('data-theme', t)
+      el.style.colorScheme = t
+    })()
+  </script>
+  <!-- 样式表加载完之前先有背景色，暗色模式下打开不闪白（颜色和主题的 --background 一致） -->
+  <style>html { background: #0a0a0a } html[data-theme='light'] { background: #fff }</style>
+  <script>
+    // 不依赖模块、React 和 CSS：入口脚本本身加载不了时，也显示文字诊断。
+    (function () {
+      var pending = ''
+      function show(message) {
+        pending = message
+        var root = document.getElementById('root')
+        if (!root || root.childElementCount) return
+        var panel = document.getElementById('shuttle-startup-error')
+        if (!panel) {
+          panel = document.createElement('section')
+          panel.id = 'shuttle-startup-error'
+          panel.style.cssText = 'position:fixed;inset:0;overflow:auto;background:#fff;color:#111;padding:40px;font:15px/1.6 system-ui;z-index:99999'
+          var title = document.createElement('h1')
+          title.textContent = 'Annulo 界面启动失败 / Interface failed to start'
+          var details = document.createElement('pre')
+          details.id = 'shuttle-startup-details'
+          details.style.cssText = 'white-space:pre-wrap;word-break:break-word'
+          var retry = document.createElement('button')
+          retry.textContent = '重试 / Retry'
+          retry.onclick = function () { location.reload() }
+          panel.appendChild(title); panel.appendChild(details); panel.appendChild(retry)
+          document.body.appendChild(panel)
+        }
+        document.getElementById('shuttle-startup-details').textContent = message + '\n\nURL: ' + location.href + '\nBrowser: ' + navigator.userAgent
+      }
+      window.addEventListener('error', function (e) {
+        if (e.target && e.target !== window && e.target.tagName !== 'SCRIPT') return
+        show(e.error ? String(e.error) + '\n' + (e.error.stack || '') : e.message || ('Script load failed: ' + (e.target.src || 'unknown')))
+      }, true)
+      window.addEventListener('unhandledrejection', function (e) { show(String(e.reason) + '\n' + ((e.reason && e.reason.stack) || '')) })
+      document.addEventListener('DOMContentLoaded', function () { if (pending) show(pending) })
+      setTimeout(function () { show('等待 20 秒后仍没有界面内容。请通过 Annulo 菜单打开日志。\nNo interface appeared within 20 seconds. Open the log from the Annulo menu.') }, 20000)
+    })()
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

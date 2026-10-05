@@ -1,0 +1,115 @@
+{
+  "name": "annulo",
+  "version": "2026.10.5-1",
+  "description": "Annulo Mac and Windows desktop shell with bundled Chromium",
+  "author": "Annulo",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test policy.test.cjs splash.test.cjs updater.test.cjs datadir.test.cjs",
+    "pack:mac": "electron-builder --mac dmg --universal --publish never",
+    "pack:mac:split": "electron-builder --config builder.mac-single.cjs --mac dmg --arm64 --x64 --publish never",
+    "pack:win": "electron-builder --win nsis zip --x64 --arm64 --publish never --config.directories.output=../dist/electron/windows"
+  },
+  "devDependencies": {
+    "electron": "43.7.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "dev.annulo.app",
+    "productName": "Annulo",
+    "directories": {
+      "output": "../dist/electron/mac"
+    },
+    "files": [
+      "main.cjs",
+      "datadir.cjs",
+      "preload.cjs",
+      "policy.cjs",
+      "splash.cjs",
+      "updater.cjs",
+      "package.json",
+      "icons/Annulo.png",
+      "icons/tray.png"
+    ],
+    "protocols": [
+      {
+        "name": "Annulo",
+        "schemes": [
+          "annulo",
+          "shuttle"
+        ]
+      }
+    ],
+    "artifactName": "Annulo-${version}-macos-${arch}.${ext}",
+    "mac": {
+      "extraResources": [
+        {
+          "from": "../dist/electron/bin",
+          "to": "bin",
+          "filter": [
+            "annulo",
+            "shuttle"
+          ]
+        }
+      ],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "icons/Annulo.icns",
+      "category": "public.app-category.productivity",
+      "minimumSystemVersion": "12.0",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Annulo"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "icons/Annulo.ico",
+      "extraResources": [
+        {
+          "from": "../dist/electron/windows/${arch}/bin",
+          "to": "bin",
+          "filter": [
+            "annulo.exe",
+            "shuttle.exe"
+          ]
+        }
+      ],
+      "artifactName": "Annulo-${version}-windows-${arch}.${ext}",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "buildUniversalInstaller": false,
+      "include": "installer.nsh",
+      "artifactName": "Annulo-${version}-windows-${arch}-setup.${ext}"
+    }
+  }
+}

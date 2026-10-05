@@ -1,0 +1,719 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+
+	"github.com/sky-valley/pi/ai"
+)
+
+var defaultModel = &ai.Model{
+	ID: "unknown", Name: "unknown", Api: "unknown", Provider: "unknown",
+	Input: []string{}, ContextWindow: 0, MaxTokens: 0,
+}
+
+// AgentState is the public, mutable state of an Agent.
+type AgentState struct {
+	// SystemPrompt is the current system prompt, replayed from the transcript's
+	// system messages: State derives it, and nothing reads it back. To change
+	// the prompt, append a system message with Content or Sections. In
+	// AgentOptions.InitialState it seeds the leading system message.
+	SystemPrompt  string
+	Model         *ai.Model
+	ThinkingLevel ThinkingLevel
+	// Tools are the executable tools. Differences from the tools declared in
+	// the transcript are announced to the model with a system message before
+	// the next request.
+	Tools []AgentTool
+	// Messages is the conversation transcript. Its system messages carry the
+	// prompt and the tool declarations.
+	Messages []AgentMessage
+
+	IsStreaming      bool
+	StreamingMessage AgentMessage
+	PendingToolCalls map[string]bool
+	ErrorMessage     string
+}
+
+// Listener receives agent events with the active run's cancellation context.
+type Listener func(ctx context.Context, event AgentEvent) error
+
+type pendingQueue struct {
+	mode     QueueMode
+	messages []AgentMessage
+}
+
+func (q *pendingQueue) enqueue(m AgentMessage) { q.messages = append(q.messages, m) }
+func (q *pendingQueue) hasItems() bool         { return len(q.messages) > 0 }
+func (q *pendingQueue) clear()                 { q.messages = nil }
+
+// peek returns the messages the next drain would select, without consuming
+// them.
+func (q *pendingQueue) peek() []AgentMessage {
+	if q.mode == QueueAll {
+		return slices.Clone(q.messages)
+	}
+	if len(q.messages) == 0 {
+		return nil
+	}
+	return []AgentMessage{q.messages[0]}
+}
+
+func (q *pendingQueue) drain() []AgentMessage {
+	drained := q.peek()
+	q.messages = q.messages[len(drained):]
+	return drained
+}
+
+// AgentOptions configures a new Agent.
+type AgentOptions struct {
+	InitialState     *AgentState
+	ConvertToLlm     func(messages []AgentMessage) []ai.Message
+	TransformContext func(ctx context.Context, messages []AgentMessage) []AgentMessage
+	StreamFn         StreamFn
+	GetApiKey        func(provider string) string
+	OnPayload        func(payload any, model *ai.Model) (any, error)
+	OnResponse       func(resp ai.ProviderResponse, model *ai.Model) error
+
+	// OnProviderStreamEvent observes each parsed provider stream event before
+	// it is normalized (pi AgentOptions.onProviderStreamEvent); it is forwarded
+	// to the stream options. See ai.StreamOptions.OnProviderStreamEvent.
+	OnProviderStreamEvent func(data any, model *ai.Model) error
+
+	BeforeToolCall  func(ctx context.Context, c BeforeToolCallContext) *BeforeToolCallResult
+	AfterToolCall   func(ctx context.Context, c AfterToolCallContext) *AfterToolCallResult
+	FinishTurn      FinishTurnFunc
+	PrepareRequest  PrepareRequestFunc
+	PrepareNextTurn func(c AgentTurnContext) *AgentLoopTurnUpdate
+	SteeringMode    QueueMode
+	FollowUpMode    QueueMode
+	SessionID       string
+	ThinkingBudgets *ai.ThinkingBudgets
+	Transport       ai.Transport
+	MaxRetryDelayMs *int
+	MaxRetries      int
+	TimeoutMs       int
+	// WebSocketConnectTimeoutMs and HTTPClient are forwarded to the stream
+	// options (pi AgentLoopConfig extends SimpleStreamOptions).
+	WebSocketConnectTimeoutMs int
+	HTTPClient                ai.HTTPDoer
+	Temperature               *float64
+	MaxTokens                 *int
+	CacheRetention            ai.CacheRetention
+	Headers                   ai.ProviderHeaders
+	// Metadata is optional request metadata forwarded to providers.
+	Metadata      map[string]any
+	ToolExecution ToolExecutionMode
+}
+
+type activeRun struct {
+	cancel context.CancelFunc
+	ctx    context.Context
+	done   chan struct{}
+}
+
+// Agent is a stateful wrapper around the low-level agent loop. It owns the
+// transcript, emits lifecycle events, executes tools, and exposes steering/
+// follow-up queueing.
+type Agent struct {
+	mu        sync.Mutex
+	state     AgentState
+	listeners []Listener
+
+	steeringQueue pendingQueue
+	followUpQueue pendingQueue
+
+	ConvertToLlm     func(messages []AgentMessage) []ai.Message
+	TransformContext func(ctx context.Context, messages []AgentMessage) []AgentMessage
+	StreamFn         StreamFn
+	GetApiKey        func(provider string) string
+	OnPayload        func(payload any, model *ai.Model) (any, error)
+	OnResponse       func(resp ai.ProviderResponse, model *ai.Model) error
+
+	// OnProviderStreamEvent is forwarded to every provider request (pi's public
+	// Agent.onProviderStreamEvent).
+	OnProviderStreamEvent func(data any, model *ai.Model) error
+
+	BeforeToolCall  func(ctx context.Context, c BeforeToolCallContext) *BeforeToolCallResult
+	AfterToolCall   func(ctx context.Context, c AfterToolCallContext) *AfterToolCallResult
+	FinishTurn      FinishTurnFunc
+	PrepareRequest  PrepareRequestFunc
+	PrepareNextTurn func(c AgentTurnContext) *AgentLoopTurnUpdate
+
+	SessionID                 string
+	ThinkingBudgets           *ai.ThinkingBudgets
+	Transport                 ai.Transport
+	MaxRetryDelayMs           *int
+	MaxRetries                int
+	TimeoutMs                 int
+	WebSocketConnectTimeoutMs int
+	HTTPClient                ai.HTTPDoer
+	Temperature               *float64
+	MaxTokens                 *int
+	CacheRetention            ai.CacheRetention
+	Headers                   ai.ProviderHeaders
+	Metadata                  map[string]any
+	ToolExecution             ToolExecutionMode
+
+	active *activeRun
+}
+
+// NewAgent constructs an Agent from options.
+func NewAgent(opts AgentOptions) *Agent {
+	st := AgentState{
+		Model:            defaultModel,
+		ThinkingLevel:    ThinkOff,
+		PendingToolCalls: map[string]bool{},
+	}
+	if opts.InitialState != nil {
+		in := opts.InitialState
+		if in.Model != nil {
+			st.Model = in.Model
+		}
+		if in.ThinkingLevel != "" {
+			st.ThinkingLevel = in.ThinkingLevel
+		}
+		st.Tools = append([]AgentTool(nil), in.Tools...)
+		st.Messages = append([]AgentMessage(nil), in.Messages...)
+		// The seed prompt and tools become the leading system message, unless
+		// the transcript already starts with one (agent.ts
+		// createMutableAgentState).
+		declarations := make([]ai.Tool, len(st.Tools))
+		for i, tool := range st.Tools {
+			declarations[i] = ai.ToToolDeclaration(tool.asAITool())
+		}
+		initial, ok := ai.CreateInitialSystemMessage(in.SystemPrompt, declarations)
+		if ok && (len(st.Messages) == 0 || st.Messages[0].MessageRole() != ai.RoleSystem) {
+			st.Messages = append([]AgentMessage{initial}, st.Messages...)
+		}
+	}
+	a := &Agent{
+		state:                     st,
+		ConvertToLlm:              opts.ConvertToLlm,
+		TransformContext:          opts.TransformContext,
+		StreamFn:                  opts.StreamFn,
+		GetApiKey:                 opts.GetApiKey,
+		OnPayload:                 opts.OnPayload,
+		OnResponse:                opts.OnResponse,
+		OnProviderStreamEvent:     opts.OnProviderStreamEvent,
+		BeforeToolCall:            opts.BeforeToolCall,
+		AfterToolCall:             opts.AfterToolCall,
+		FinishTurn:                opts.FinishTurn,
+		PrepareRequest:            opts.PrepareRequest,
+		PrepareNextTurn:           opts.PrepareNextTurn,
+		SessionID:                 opts.SessionID,
+		ThinkingBudgets:           opts.ThinkingBudgets,
+		Transport:                 opts.Transport,
+		MaxRetryDelayMs:           opts.MaxRetryDelayMs,
+		MaxRetries:                opts.MaxRetries,
+		TimeoutMs:                 opts.TimeoutMs,
+		WebSocketConnectTimeoutMs: opts.WebSocketConnectTimeoutMs,
+		HTTPClient:                opts.HTTPClient,
+		Temperature:               opts.Temperature,
+		MaxTokens:                 opts.MaxTokens,
+		CacheRetention:            opts.CacheRetention,
+		Headers:                   opts.Headers,
+		Metadata:                  opts.Metadata,
+		ToolExecution:             opts.ToolExecution,
+	}
+	if a.ConvertToLlm == nil {
+		a.ConvertToLlm = defaultConvertToLlm
+	}
+	if a.StreamFn == nil {
+		a.StreamFn = streamSimpleTranscript
+	}
+	if a.Transport == "" {
+		a.Transport = ai.TransportAuto
+	}
+	if a.ToolExecution == "" {
+		a.ToolExecution = ToolParallel
+	}
+	a.steeringQueue.mode = orMode(opts.SteeringMode, QueueOneAtATime)
+	a.followUpQueue.mode = orMode(opts.FollowUpMode, QueueOneAtATime)
+	return a
+}
+
+func orMode(m, fallback QueueMode) QueueMode {
+	if m == "" {
+		return fallback
+	}
+	return m
+}
+
+// Subscribe registers an event listener; the returned function unsubscribes.
+func (a *Agent) Subscribe(l Listener) func() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.listeners = append(a.listeners, l)
+	idx := len(a.listeners) - 1
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if idx < len(a.listeners) {
+			a.listeners[idx] = nil
+		}
+	}
+}
+
+// State returns a snapshot view of the agent state. The returned struct is a
+// shallow copy; slices share backing storage and should be treated read-only.
+// PendingToolCalls is copy-on-write (pi agent.ts:524-535), so the returned map
+// is an immutable snapshot that is safe to iterate while tools run.
+// SystemPrompt is replayed from the transcript.
+func (a *Agent) State() AgentState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.state
+	st.SystemPrompt = ai.GetCurrentSystemPrompt(st.Messages)
+	return st
+}
+
+// SetModel sets the active model for future turns.
+func (a *Agent) SetModel(m *ai.Model) { a.mu.Lock(); a.state.Model = m; a.mu.Unlock() }
+
+// SetThinkingLevel sets the reasoning level for future turns.
+func (a *Agent) SetThinkingLevel(l ThinkingLevel) {
+	a.mu.Lock()
+	a.state.ThinkingLevel = l
+	a.mu.Unlock()
+}
+
+// SetTools replaces the available tools (copied).
+func (a *Agent) SetTools(tools []AgentTool) {
+	a.mu.Lock()
+	a.state.Tools = append([]AgentTool(nil), tools...)
+	a.mu.Unlock()
+}
+
+// SetMessages replaces the transcript (copied).
+func (a *Agent) SetMessages(messages []AgentMessage) {
+	a.mu.Lock()
+	a.state.Messages = append([]AgentMessage(nil), messages...)
+	a.mu.Unlock()
+}
+
+// Steer queues a message to inject after the current assistant turn finishes.
+func (a *Agent) Steer(m AgentMessage) { a.mu.Lock(); a.steeringQueue.enqueue(m); a.mu.Unlock() }
+
+// FollowUp queues a message to run after the agent would otherwise stop.
+func (a *Agent) FollowUp(m AgentMessage) { a.mu.Lock(); a.followUpQueue.enqueue(m); a.mu.Unlock() }
+
+// ClearSteeringQueue removes all queued steering messages.
+func (a *Agent) ClearSteeringQueue() { a.mu.Lock(); a.steeringQueue.clear(); a.mu.Unlock() }
+
+// ClearFollowUpQueue removes all queued follow-up messages.
+func (a *Agent) ClearFollowUpQueue() { a.mu.Lock(); a.followUpQueue.clear(); a.mu.Unlock() }
+
+// ClearAllQueues removes all queued messages.
+func (a *Agent) ClearAllQueues() {
+	a.mu.Lock()
+	a.steeringQueue.clear()
+	a.followUpQueue.clear()
+	a.mu.Unlock()
+}
+
+// HasQueuedMessages reports whether either queue has pending messages.
+func (a *Agent) HasQueuedMessages() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.steeringQueue.hasItems() || a.followUpQueue.hasItems()
+}
+
+// PeekQueuedMessages previews the messages selected for the next turn without
+// consuming them: the next steering selection, or the next follow-up selection
+// when no steering is queued.
+func (a *Agent) PeekQueuedMessages() []AgentMessage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if steering := a.steeringQueue.peek(); len(steering) > 0 {
+		return steering
+	}
+	return a.followUpQueue.peek()
+}
+
+// Abort cancels the current run, if any.
+func (a *Agent) Abort() {
+	a.mu.Lock()
+	run := a.active
+	a.mu.Unlock()
+	if run != nil {
+		run.cancel()
+	}
+}
+
+// WaitForIdle blocks until the current run and its listeners finish.
+func (a *Agent) WaitForIdle() {
+	a.mu.Lock()
+	run := a.active
+	a.mu.Unlock()
+	if run != nil {
+		<-run.done
+	}
+}
+
+// Reset clears conversation state, runtime state and queued messages while
+// retaining the replayed prompt/tool baseline: the transcript becomes its
+// current system message alone. It refuses while a run is active, so a reset
+// cannot race the run that is mutating the state it clears (pi agent.ts
+// reset()).
+func (a *Agent) Reset() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active != nil {
+		return errors.New("Agent is already processing. Wait for completion before resetting.")
+	}
+	baseline, ok := ai.GetCurrentSystemMessage(a.state.Messages)
+	a.state.Messages = nil
+	if ok {
+		a.state.Messages = []AgentMessage{baseline}
+	}
+	a.state.IsStreaming = false
+	a.state.StreamingMessage = nil
+	a.state.PendingToolCalls = map[string]bool{}
+	a.state.ErrorMessage = ""
+	a.steeringQueue.clear()
+	a.followUpQueue.clear()
+	return nil
+}
+
+// Prompt starts a new run from text. Blocks until the run completes.
+func (a *Agent) Prompt(ctx context.Context, text string, images ...ai.ImageContent) error {
+	content := ai.ContentList{ai.TextContent{Text: text}}
+	for _, img := range images {
+		content = append(content, img)
+	}
+	msg := ai.UserMessage{Content: content, Timestamp: nowMillis()}
+	return a.PromptMessages(ctx, []AgentMessage{msg})
+}
+
+// PromptMessages starts a new run from explicit messages.
+func (a *Agent) PromptMessages(ctx context.Context, messages []AgentMessage) error {
+	a.mu.Lock()
+	if a.active != nil {
+		a.mu.Unlock()
+		return errors.New("Agent is already processing a prompt. Use Steer() or FollowUp() to queue messages, or wait for completion.")
+	}
+	a.mu.Unlock()
+	return a.runPromptMessages(ctx, messages, false)
+}
+
+// Continue continues from the current transcript. The last message must be a
+// user or tool-result message (or queued messages must exist).
+func (a *Agent) Continue(ctx context.Context) error {
+	a.mu.Lock()
+	if a.active != nil {
+		a.mu.Unlock()
+		return errors.New("Agent is already processing. Wait for completion before continuing.")
+	}
+	// An empty transcript, or one holding only the prompt and tool
+	// declarations, has nothing to continue from.
+	if !slices.ContainsFunc(a.state.Messages, func(m AgentMessage) bool { return m.MessageRole() != ai.RoleSystem }) {
+		a.mu.Unlock()
+		return errors.New("No messages to continue from")
+	}
+	last := a.state.Messages[len(a.state.Messages)-1]
+	a.mu.Unlock()
+
+	if last.MessageRole() == ai.RoleAssistant {
+		// Claim the run slot BEFORE draining, atomically under one lock, so a
+		// concurrent Prompt cannot win the slot after we drained (the drained
+		// messages would be lost). If the claim fails, the queues are untouched.
+		var drained []AgentMessage
+		skipInitialSteeringPoll := false
+		run, err := a.claimRun(ctx, func() {
+			if steering := a.steeringQueue.drain(); len(steering) > 0 {
+				drained = steering
+				skipInitialSteeringPoll = true
+				return
+			}
+			drained = a.followUpQueue.drain()
+		})
+		if err != nil {
+			return errors.New("Agent is already processing. Wait for completion before continuing.")
+		}
+		if len(drained) == 0 {
+			a.releaseRun(run)
+			return errors.New("Cannot continue from message role: assistant")
+		}
+		return a.executeClaimedRun(run, func(runCtx context.Context) {
+			runAgentLoop(runCtx, drained, a.contextSnapshot(), a.loopConfig(skipInitialSteeringPoll), a.processEvent(runCtx), a.StreamFn)
+		})
+	}
+	return a.runContinuation(ctx)
+}
+
+func (a *Agent) runPromptMessages(parent context.Context, messages []AgentMessage, skipInitialSteeringPoll bool) error {
+	return a.runWithLifecycle(parent, func(ctx context.Context) {
+		runAgentLoop(ctx, messages, a.contextSnapshot(), a.loopConfig(skipInitialSteeringPoll), a.processEvent(ctx), a.StreamFn)
+	})
+}
+
+func (a *Agent) runContinuation(parent context.Context) error {
+	return a.runWithLifecycle(parent, func(ctx context.Context) {
+		runAgentLoopContinue(ctx, a.contextSnapshot(), a.loopConfig(false), a.processEvent(ctx), a.StreamFn)
+	})
+}
+
+var emptyUsage = ai.Usage{
+	Cost: ai.CostBreakdown{},
+}
+
+// handleRunFailure mirrors pi agent.ts:476-492: when the executor throws (a Go
+// panic from streamFn/convertToLlm/transformContext, or a listener error that
+// unwound the loop), synthesize a terminal assistant message and emit the full
+// failure sequence (message_start → message_end → turn_end → agent_end) so the
+// lifecycle is always complete and state.errorMessage is set.
+//
+// pi awaits each failure-event emit: a listener rejection stops the remaining
+// failure events and rejects prompt(), while the finally still finishes the
+// run. The returned error mirrors that rejection (state cleanup happens in
+// executeClaimedRun).
+func (a *Agent) handleRunFailure(ctx context.Context, msg string, aborted bool) error {
+	a.mu.Lock()
+	model := a.state.Model
+	a.mu.Unlock()
+
+	stop := ai.StopError
+	if aborted {
+		stop = ai.StopAborted
+	}
+	failure := &ai.AssistantMessage{
+		Content:      ai.ContentList{ai.TextContent{Text: ""}},
+		Api:          ai.Api(model.Api),
+		Provider:     ai.ProviderId(model.Provider),
+		Model:        model.ID,
+		Usage:        emptyUsage,
+		StopReason:   stop,
+		ErrorMessage: msg,
+		Timestamp:    nowMillis(),
+	}
+	emit := a.processEvent(ctx)
+	for _, e := range []AgentEvent{
+		{Type: EvMessageStart, Message: failure},
+		{Type: EvMessageEnd, Message: failure},
+		{Type: EvTurnEnd, Message: failure, ToolResults: []ai.ToolResultMessage{}},
+		{Type: EvAgentEnd, Messages: []AgentMessage{failure}},
+	} {
+		if err := emit(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Agent) contextSnapshot() AgentContext {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return AgentContext{
+		Messages: append([]AgentMessage(nil), a.state.Messages...),
+		Tools:    append([]AgentTool(nil), a.state.Tools...),
+	}
+}
+
+func (a *Agent) loopConfig(skipInitialSteeringPoll bool) AgentLoopConfig {
+	a.mu.Lock()
+	model := a.state.Model
+	reasoning := a.state.ThinkingLevel
+	a.mu.Unlock()
+
+	skip := skipInitialSteeringPoll
+
+	cfg := AgentLoopConfig{
+		Model:                     model,
+		Reasoning:                 reasoning,
+		SessionID:                 a.SessionID,
+		Transport:                 a.Transport,
+		ThinkingBudgets:           a.ThinkingBudgets,
+		MaxRetryDelayMs:           a.MaxRetryDelayMs,
+		MaxRetries:                a.MaxRetries,
+		TimeoutMs:                 a.TimeoutMs,
+		WebSocketConnectTimeoutMs: a.WebSocketConnectTimeoutMs,
+		HTTPClient:                a.HTTPClient,
+		Temperature:               a.Temperature,
+		MaxTokens:                 a.MaxTokens,
+		CacheRetention:            a.CacheRetention,
+		Headers:                   a.Headers,
+		Metadata:                  a.Metadata,
+		ToolExecution:             a.ToolExecution,
+		OnPayload:                 a.OnPayload,
+		OnResponse:                a.OnResponse,
+		OnProviderStreamEvent:     a.OnProviderStreamEvent,
+		ConvertToLlm:              a.ConvertToLlm,
+		TransformContext:          a.TransformContext,
+		GetApiKey:                 a.GetApiKey,
+		BeforeToolCall:            a.BeforeToolCall,
+		AfterToolCall:             a.AfterToolCall,
+		FinishTurn:                a.FinishTurn,
+		PrepareRequest:            a.PrepareRequest,
+		PrepareNextTurn:           a.PrepareNextTurn,
+		GetSteeringMessages: func() []AgentMessage {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if skip {
+				skip = false
+				return nil
+			}
+			return a.steeringQueue.drain()
+		},
+		GetFollowUpMessages: func() []AgentMessage {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return a.followUpQueue.drain()
+		},
+	}
+	if reasoning == ThinkOff {
+		cfg.Reasoning = ""
+	}
+	return cfg
+}
+
+func (a *Agent) runWithLifecycle(parent context.Context, executor func(ctx context.Context)) error {
+	run, err := a.claimRun(parent, nil)
+	if err != nil {
+		return err
+	}
+	return a.executeClaimedRun(run, executor)
+}
+
+// claimRun atomically claims the run slot, returning pi's "Agent is already
+// processing." error when a run is active. onClaimed (optional) runs under the
+// same lock immediately after a successful claim, so callers can drain queues
+// without a concurrent Prompt/Continue stealing the slot in between (B3).
+func (a *Agent) claimRun(parent context.Context, onClaimed func()) (*activeRun, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	run := &activeRun{cancel: cancel, ctx: ctx, done: make(chan struct{})}
+
+	a.mu.Lock()
+	if a.active != nil {
+		a.mu.Unlock()
+		cancel()
+		return nil, errors.New("Agent is already processing.")
+	}
+	a.active = run
+	if onClaimed != nil {
+		onClaimed()
+	}
+	a.mu.Unlock()
+	return run, nil
+}
+
+// releaseRun abandons a claimed run that never executed (e.g. Continue claimed
+// the slot but found nothing to drain). State that claimRun did not touch is
+// left intact, matching pi where continue() throws before any run starts.
+func (a *Agent) releaseRun(run *activeRun) {
+	a.mu.Lock()
+	a.active = nil
+	a.mu.Unlock()
+	run.cancel()
+	close(run.done)
+}
+
+// executeClaimedRun runs the executor for an already-claimed run slot.
+func (a *Agent) executeClaimedRun(run *activeRun, executor func(ctx context.Context)) error {
+	ctx := run.ctx
+
+	a.mu.Lock()
+	a.state.IsStreaming = true
+	a.state.StreamingMessage = nil
+	a.state.ErrorMessage = ""
+	a.mu.Unlock()
+
+	// pi wraps the executor in try/catch → handleRunFailure (agent.ts:467-492).
+	// In Go the failure surfaces as a panic: an emitPanic (a listener returned
+	// an error and unwound the loop) or any other panic from streamFn /
+	// convertToLlm / transformContext. Either way we synthesize the failure turn.
+	// If a failure-event listener itself errors, that error is returned from the
+	// run (pi: the rejection propagates out of prompt()) while the finally-style
+	// state cleanup below still happens.
+	var runErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				var msg string
+				if ep, ok := r.(emitPanic); ok {
+					msg = ep.err.Error()
+				} else {
+					msg = panicMessage(r)
+				}
+				runErr = a.handleRunFailure(ctx, msg, ctx.Err() != nil)
+			}
+		}()
+		executor(ctx)
+	}()
+
+	a.mu.Lock()
+	a.state.IsStreaming = false
+	a.state.StreamingMessage = nil
+	a.state.PendingToolCalls = map[string]bool{}
+	a.active = nil
+	a.mu.Unlock()
+	run.cancel()
+	close(run.done)
+	return runErr
+}
+
+// processEvent reduces internal state for a loop event, then notifies listeners.
+func (a *Agent) processEvent(ctx context.Context) EventSink {
+	return func(event AgentEvent) error {
+		a.mu.Lock()
+		switch event.Type {
+		case EvMessageStart, EvMessageUpdate:
+			a.state.StreamingMessage = event.Message
+		case EvMessageEnd:
+			a.state.StreamingMessage = nil
+			a.state.Messages = append(a.state.Messages, event.Message)
+		case EvToolExecutionStart:
+			// Copy-on-write (pi agent.ts:524-529, `new Set(...)`): State()'s
+			// shallow copy hands out an immutable snapshot, never the live map.
+			next := make(map[string]bool, len(a.state.PendingToolCalls)+1)
+			for k, v := range a.state.PendingToolCalls {
+				next[k] = v
+			}
+			next[event.ToolCallID] = true
+			a.state.PendingToolCalls = next
+		case EvToolExecutionEnd:
+			// Copy-on-write (pi agent.ts:531-535).
+			next := make(map[string]bool, len(a.state.PendingToolCalls))
+			for k, v := range a.state.PendingToolCalls {
+				if k != event.ToolCallID {
+					next[k] = v
+				}
+			}
+			a.state.PendingToolCalls = next
+		case EvTurnEnd:
+			if am, ok := asAssistant(event.Message); ok && am.ErrorMessage != "" {
+				a.state.ErrorMessage = am.ErrorMessage
+			}
+		case EvAgentEnd:
+			a.state.StreamingMessage = nil
+		}
+		listeners := append([]Listener(nil), a.listeners...)
+		a.mu.Unlock()
+
+		for _, l := range listeners {
+			if l == nil {
+				continue
+			}
+			if err := l(ctx, event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+func asAssistant(m AgentMessage) (*ai.AssistantMessage, bool) {
+	switch v := m.(type) {
+	case *ai.AssistantMessage:
+		return v, true
+	case ai.AssistantMessage:
+		return &v, true
+	default:
+		return nil, false
+	}
+}
