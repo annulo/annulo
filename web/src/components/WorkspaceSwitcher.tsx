@@ -111,7 +111,8 @@ export function WorkspaceSwitcher({ current }: { current: string }) {
           )}
           {err && <p className="px-2.5 py-1.5 text-xs leading-relaxed text-destructive">{err}</p>}
           <div className="my-1 h-px bg-border" />
-          {cur && !cur.offline && (
+          {/* 在手机上打开要 creght 账号：没连就不出现 */}
+          {st?.logged_in && cur && !cur.offline && (
             <button role="menuitem" onClick={remote} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-accent focus-visible:bg-accent">
               <Smartphone className="size-4 text-muted-foreground" />
               {t('在手机上打开')}

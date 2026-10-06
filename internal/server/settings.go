@@ -32,8 +32,6 @@ type providerView struct {
 	Ready     bool   `json:"ready"`
 	Error     string `json:"error"`
 	Agent     bool   `json:"agent,omitempty"` // 本机的外部 agent（Claude Code / Codex），不能编辑
-	// NeedsConnect：creght 平台没连上账号，界面给「连接」入口（设置 → 连接）
-	NeedsConnect bool `json:"needs_connect,omitempty"`
 	// Disabled：用户关掉了这个服务商，它的模型不出现在列表和选择菜单里（PUT settings/llm {provider, enabled}）
 	Disabled bool `json:"disabled,omitempty"`
 }
@@ -94,16 +92,12 @@ func (s *Server) apiLLMGet(w http.ResponseWriter, r *http.Request) {
 	host := s.loginHost()
 	_, tokErr := creght.ReadToken(host)
 	builtin := providerView{ID: config.CreghtProvider, Name: i18n.T("creght 平台", "creght platform"), Builtin: true, Api: "openai-completions", Ready: tokErr == nil && cmErr == nil}
-	switch {
-	case tokErr != nil:
-		builtin.Error = i18n.T("还没连接 creght", "creght isn't connected yet")
-		builtin.NeedsConnect = true
-	case cmErr != nil:
+	if cmErr != nil {
 		builtin.Error = cmErr.Error()
 	}
-	var providers []providerView
+	providers := []providerView{} // 没连 creght、也没加服务商时是空数组，不能是 null（界面直接 .filter）
 	if tokErr == nil {
-		providers = append(providers, builtin) // 连了 creght：平台模型排第一
+		providers = append(providers, builtin) // 连了 creght：平台模型排第一；没连就不出现
 	}
 	for _, p := range st.Providers {
 		providers = append(providers, viewProvider(p))
@@ -114,16 +108,17 @@ func (s *Server) apiLLMGet(w http.ResponseWriter, r *http.Request) {
 			providers = append(providers, providerView{ID: a.ID, Name: a.Name + i18n.T("（本机）", " (this computer)"), Agent: true, Ready: true})
 		}
 	}
-	if tokErr != nil {
-		providers = append(providers, builtin) // 没连：排在自己的和本机 agent 后面，点了引导去连接
-	}
 	disabled := s.agent.DisabledProviders()
 	for i := range providers {
 		providers[i].Disabled = slices.Contains(disabled, providers[i].ID)
 	}
 	models := make([]modelView, 0, len(st.Models))
 	for _, m := range st.Models {
-		models = append(models, s.viewModel(m))
+		v := s.viewModel(m)
+		if v.Builtin && tokErr != nil {
+			continue // 没连 creght：平台的服务商和模型都不出现（缓存里可能还有上次拉到的）
+		}
+		models = append(models, v)
 	}
 	autoTitle, titleModel := s.agent.TitleSettings()
 	writeJSON(w, map[string]any{"providers": providers, "models": models, "agents": agents, "active": st.Active, "thinking": st.Thinking, "thinking_levels": config.ThinkingLevels,

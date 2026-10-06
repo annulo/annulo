@@ -20,7 +20,9 @@ import (
 type Config struct {
 	Host string
 	Port int
-	Dir  string // ~/.shuttle
+	// PortFixed：端口是环境变量指定的，被占了就报错，不自动换（见 app.listen）
+	PortFixed bool `json:"-"`
+	Dir       string // ~/.shuttle
 
 	// Providers 是用户自己加的服务商（协议 + 地址 + key）。内置的 creght 服务商不在这里：
 	// 它用登录的 creght 账号，地址和凭据运行时才取（见 agent.creghtEndpoint）。
@@ -227,10 +229,19 @@ func Load() (*Config, error) {
 		if err != nil {
 			return nil, i18n.Errorf("%s=%q 不是端口号", "%s=%q is not a port number", brand.EnvName("PORT"), v)
 		}
-		c.Port = p
+		c.Port, c.PortFixed = p, true
 	}
 	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
 		return nil, err
+	}
+	// 没指定端口：用上次实际监听的（7799 被别的程序占了时会换一个，记在 <数据目录>/port）。
+	// 命令行（annulo run / logs）也靠它找到正在跑的服务
+	if !c.PortFixed {
+		if b, err := os.ReadFile(c.PortFile()); err == nil {
+			if p, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && p > 0 && p < 65536 {
+				c.Port = p
+			}
+		}
 	}
 	b, err := os.ReadFile(c.File())
 	if err != nil && !os.IsNotExist(err) {
@@ -255,6 +266,9 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) File() string { return filepath.Join(c.Dir, "config.json") }
+
+// PortFile 记着服务实际监听的端口（App 外壳和命令行读它连服务）。
+func (c *Config) PortFile() string { return filepath.Join(c.Dir, "port") }
 
 // BackendDir 是当前运营后台站点的本地副本（creght pull 出来的工作区），agent 在这里改代码。
 // 还没选运营后台时返回空。

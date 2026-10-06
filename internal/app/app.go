@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/annulo/annulo/internal/agent"
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/config"
 	"github.com/annulo/annulo/internal/creght"
+	"github.com/annulo/annulo/internal/i18n"
 	"github.com/annulo/annulo/internal/mcphub"
 	"github.com/annulo/annulo/internal/server"
 	"github.com/annulo/annulo/internal/version"
@@ -33,6 +35,11 @@ type Instance struct {
 // Start 准备好所有组件并开始监听（还没有开始处理请求，调 Serve）。webDir 非空时从这个目录提供前端（开发用）。
 func Start(webDir string) (*Instance, error) {
 	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	// 先占端口：授权跳回地址、MCP 地址这些都按实际端口拼
+	ln, err := listen(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -75,12 +82,6 @@ func Start(webDir string) (*Instance, error) {
 	srv := server.New(cfg, web, ws, ag, hub)
 	if err := hub.Reload(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! MCP 配置有误：%v\n", err)
-	}
-
-	ln, err := net.Listen("tcp", cfg.Addr())
-	if err != nil {
-		hub.Close()
-		return nil, err
 	}
 	inst := &Instance{
 		URL: fmt.Sprintf("http://%s/", cfg.Addr()),
@@ -128,6 +129,41 @@ func Running(addr string) bool {
 	}
 	resp.Body.Close()
 	return resp.Header.Get(brand.Header) != "" || resp.Header.Get(brand.HeaderNew) != ""
+}
+
+// listen 占端口：先试上次用的（默认 7799）。被别的程序占了就往后找一个空的，记进 PortFile，
+// App 外壳和命令行按它连。占着的是另一个 Annulo，或者端口是环境变量指定的，就报错不换：
+// 同一个数据目录同时跑两个服务，定时任务会跑两遍、配置互相覆盖。
+func listen(cfg *config.Config) (net.Listener, error) {
+	ln, err := net.Listen("tcp", cfg.Addr())
+	if err != nil {
+		if cfg.PortFixed {
+			return nil, err
+		}
+		if Running(cfg.Addr()) {
+			return nil, i18n.Errorf("已有 Annulo 在 %s 运行", "Annulo is already running at %s", cfg.Addr())
+		}
+		taken := cfg.Port
+		for p := 7799; p < 7899 && ln == nil; p++ {
+			if p == taken {
+				continue
+			}
+			cfg.Port = p
+			ln, _ = net.Listen("tcp", cfg.Addr())
+		}
+		if ln == nil { // 这一段都被占了：让系统随便给一个
+			cfg.Port = 0
+			if ln, err = net.Listen("tcp", cfg.Addr()); err != nil {
+				return nil, err
+			}
+			cfg.Port = ln.Addr().(*net.TCPAddr).Port
+		}
+		fmt.Fprintf(os.Stderr, "  ! 端口 %d 被别的程序占用，改用 %d\n", taken, cfg.Port)
+	}
+	if !cfg.PortFixed {
+		os.WriteFile(cfg.PortFile(), []byte(strconv.Itoa(cfg.Port)), 0o600)
+	}
+	return ln, nil
 }
 
 func isDir(p string) bool {

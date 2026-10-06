@@ -221,12 +221,20 @@ func (s *Server) scheduleProjects() []schedProject {
 }
 
 // projectName：离线项目读 .shuttle/project.json；在线项目用账号下项目列表里的名字（缓存的），查不到就是 id。
+// 缓存也存一份在 <数据目录>/project-names.json：没连 creght、拉不到列表时还能显示上次见过的名字。
 func (s *Server) projectName(pid, dir string) string {
 	if p, err := creght.ReadOffline(dir); err == nil {
 		return p.Name
 	}
+	file := filepath.Join(s.cfg.Dir, "project-names.json")
 	projectNames.Lock()
 	defer projectNames.Unlock()
+	if !projectNames.read {
+		projectNames.read = true
+		if b, err := os.ReadFile(file); err == nil {
+			json.Unmarshal(b, &projectNames.m)
+		}
+	}
 	if time.Since(projectNames.at) > 5*time.Minute && !projectNames.loading {
 		projectNames.loading = true
 		go func() {
@@ -239,6 +247,9 @@ func (s *Server) projectName(pid, dir string) string {
 			if err == nil {
 				for _, b := range list {
 					projectNames.m[b.ProjectID] = b.Name
+				}
+				if b, err := json.Marshal(projectNames.m); err == nil {
+					os.WriteFile(file, b, 0o644)
 				}
 			}
 		}()
@@ -254,6 +265,7 @@ var projectNames = struct {
 	m       map[string]string
 	at      time.Time
 	loading bool
+	read    bool // 读过 project-names.json 了
 }{m: map[string]string{}}
 
 // parseSchedules 读 root/schedules/*.json，每个文件一条，文件名是 id。

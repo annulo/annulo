@@ -88,11 +88,11 @@ var secretUseRe = regexp.MustCompile(`secrets\.get\(\s*['"]([A-Z][A-Z0-9_]+)['"]
 
 // secretNamesInUse 是本机函数里用到的密钥名（扫 local/ 的源码），设置页据此提示「还缺哪个」。
 func (s *Server) secretNamesInUse() []string {
+	out := []string{} // 没有也是空数组：设置 → 密钥直接 .filter
 	if !s.ready.Load() {
-		return nil
+		return out
 	}
 	seen := map[string]bool{}
-	var out []string
 	ents, _ := os.ReadDir(filepath.Join(s.ws.Dir, localfn.Dir))
 	for _, e := range ents {
 		b, err := os.ReadFile(filepath.Join(s.ws.Dir, localfn.Dir, e.Name()))

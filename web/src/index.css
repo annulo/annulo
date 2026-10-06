@@ -264,3 +264,7 @@
 @supports not selector(::-webkit-scrollbar) {
   * { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--muted-foreground) 28%, transparent) transparent; }
 }
+
+/* 竖向滚动区一直给滚动条留位置：数据加载出来、内容变长时出现滚动条，正文不会被挤得左右移一下。
+   输入框（自己长高）和代码块（横向为主）不留；个别地方不想留就加 .no-gutter */
+:is(.overflow-y-auto, .overflow-auto, .overflow-y-scroll):not(textarea, pre, .no-gutter) { scrollbar-gutter: stable; }

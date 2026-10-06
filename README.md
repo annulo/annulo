@@ -40,11 +40,11 @@ New project → pick a template. [`annulo/templates`](https://github.com/annulo/
 <table>
 <tr>
 <td width="50%"><img src=".github/screenshots/new-project.png" alt="Choosing a template for a new project"></td>
-<td width="50%"><img src=".github/screenshots/connect.png" alt="The first-run screen: connecting creght is optional"></td>
+<td width="50%"><img src=".github/screenshots/connect.png" alt="Connecting creght: optional, from a button on the project picker"></td>
 </tr>
 <tr>
 <td align="center">New project: pick a template, or add your own git repo</td>
-<td align="center">First run: creght is optional; skip it and everything stays on your computer</td>
+<td align="center">Connecting creght is optional: a button on the project picker, or Settings → Connections</td>
 </tr>
 </table>
 

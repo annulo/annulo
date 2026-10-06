@@ -220,15 +220,15 @@ func (s *Server) apiRemoteSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) remoteAddresses() []map[string]any {
 	out := []map[string]any{}
 	for _, pid := range s.relayProjects() {
-		siteID := s.ws.SiteID
+		siteID, dir := s.ws.SiteID, s.ws.Dir
 		if pid != s.ws.ProjectID {
 			ws, err := creght.OpenWorkspace(s.cfg.DirFor(pid))
 			if err != nil {
 				continue
 			}
-			siteID = ws.SiteID
+			siteID, dir = ws.SiteID, ws.Dir
 		}
-		out = append(out, map[string]any{"project_id": pid, "url": creght.PreviewURL(s.ws.APIHost, siteID), "current": pid == s.ws.ProjectID})
+		out = append(out, map[string]any{"project_id": pid, "name": s.projectName(pid, dir), "url": creght.PreviewURL(s.ws.APIHost, siteID), "current": pid == s.ws.ProjectID})
 	}
 	return out
 }

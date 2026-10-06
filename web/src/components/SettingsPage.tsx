@@ -13,7 +13,7 @@ import LanguageSettings from '@/components/LanguageSettings'
 import RemoteSettings from '@/components/RemoteSettings'
 import CreghtClusterSelect from '@/components/CreghtClusterSelect'
 import AboutSettings from '@/components/AboutSettings'
-import { navigate, useView } from '@/lib/router'
+import { hrefOf, navigate, useView } from '@/lib/router'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
 
@@ -34,8 +34,8 @@ const SECTIONS = [
 /** 设置：/_shuttle/settings，#llm / #mcp 切换小节 */
 export default function SettingsPage({ onSaved, creght }: { onSaved: () => void; creght: boolean }) {
   const [, hash] = useView()
-  // creght 区域只对连了 creght 的有意义（没连的在「连接」里连，docs/annulo-plan.md 第 2 步）
-  const sections = SECTIONS.filter((s) => creght || s.key !== 'creght')
+  // creght 区域、远程访问只对连了 creght 的有意义（没连的在「连接」里连，docs/annulo-plan.md 第 2 步）
+  const sections = SECTIONS.filter((s) => creght || (s.key !== 'creght' && s.key !== 'remote'))
   const cur = sections.find((s) => '#' + s.key === hash) ?? sections[0] // 没指定就是「项目」
   return (
     // 按自己的宽度排版（对话面板拉宽、窗口变窄时主区域会很窄）：窄了导航变成顶上一排
@@ -64,10 +64,11 @@ export default function SettingsPage({ onSaved, creght }: { onSaved: () => void;
             </div>
             {cur.key === 'backend' ? (
               <div className="space-y-5">
+                {/* 新建或切换项目后关掉设置、直接进到那个项目的后台 */}
+                <BackendPicker onDone={() => location.replace(hrefOf('backend'))} />
                 <OfflineCard />
                 <TemplateCard />
                 <InstructionsCard />
-                <BackendPicker onDone={() => location.reload()} />
               </div>
             ) : cur.key === 'llm' ? (
               <LLMSettings onSaved={onSaved} />

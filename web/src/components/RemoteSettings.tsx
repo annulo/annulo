@@ -3,12 +3,11 @@ import { Check, Copy, ExternalLink, QrCode } from 'lucide-react'
 import { encode } from 'uqr'
 import { getJSON, post } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import type { SetupState } from '@/components/BackendPicker'
 import { Switch } from '@/components/ui/controls'
 import { t } from '@/lib/i18n'
 
 /** projects：能远程调到的每个项目在别处打开的地址（项目站点的预览域名），当前项目排第一；离线项目不在里面 */
-type Address = { project_id: string; url: string; current: boolean }
+type Address = { project_id: string; name: string; url: string; current: boolean }
 type Remote = { enabled: boolean; online: boolean; error: string; machine: string; offline_project?: boolean; projects?: Address[] }
 
 /** 二维码：手机扫了直接打开。总是白底黑块，深色主题下也要扫得出来 */
@@ -69,12 +68,6 @@ function AddressRow({ a, name }: { a: Address; name: string }) {
 
 /** 每个项目在别处打开的地址。开关是这台电脑全局的，地址是每个项目各一个，所以全列出来 */
 function RemoteAddresses({ list }: { list: Address[] }) {
-  const [names, setNames] = useState<Record<string, string>>({})
-  useEffect(() => {
-    getJSON<SetupState>('setup')
-      .then((st) => setNames(Object.fromEntries(st.backends.map((b) => [b.project_id, b.name]))))
-      .catch(() => {})
-  }, [])
   return (
     <section className="space-y-3 rounded-xl border border-border bg-background p-4">
       <div>
@@ -85,7 +78,7 @@ function RemoteAddresses({ list }: { list: Address[] }) {
       </div>
       <div className="divide-y divide-border">
         {list.map((a) => (
-          <AddressRow key={a.project_id} a={a} name={names[a.project_id] || a.project_id} />
+          <AddressRow key={a.project_id} a={a} name={a.name || a.project_id} />
         ))}
       </div>
     </section>

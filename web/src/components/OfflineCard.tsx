@@ -66,7 +66,7 @@ export default function OfflineCard() {
           <Button size="sm" variant="outline" onClick={() => navigate('settings', '#connections')}>
             {t('连接 creght 账号')}
           </Button>
-          <span className="text-[11px] text-muted-foreground">{t('登录后可以转成在线项目')}</span>
+          <span className="text-[11px] text-muted-foreground">{t('连接后可以转成在线项目')}</span>
         </div>
       )}
       {err && <p className="text-xs break-all text-destructive">{err}</p>}

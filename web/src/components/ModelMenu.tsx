@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Brain, Check, ChevronDown, Loader, Settings2 } from 'lucide-react'
-import { getJSON, post, priceText, THINKING_LABEL, type ModelConfig, type ModelSettings, type Status, type Thinking } from '@/lib/api'
+import { getJSON, normModelSettings, post, priceText, THINKING_LABEL, type ModelConfig, type ModelSettings, type Status, type Thinking } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
-import { navigate } from '@/lib/router'
 
 /**
  * 对话框底部的模型菜单：切换模型、思考强度。改完下一条消息生效，当前对话的上下文不丢。
@@ -19,7 +18,7 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
   useEffect(() => {
     if (!at) return
     getJSON<ModelSettings>('settings/llm')
-      .then(setSt)
+      .then((s) => setSt(normModelSettings(s)))
       .catch((e: Error) => setErr(e.message))
     const close = () => setAt(null)
     const onDown = (e: MouseEvent) => !root.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node) && close()
@@ -92,7 +91,7 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
             </div>
           ) : (
             <div className="scroll-thin max-h-72 overflow-y-auto">
-              {/* 按服务商分组：creght 平台在前，没有模型的服务商不显示（creght 没登录 / 拉不到时显示原因，关掉了的不显示） */}
+              {/* 按服务商分组：creght 平台在前，没有模型的服务商不显示（creght 没连就不出现；连了但拉不到时显示原因，关掉了的不显示） */}
               {st.providers.map((p) => {
                 const ms = st.models.filter((m) => m.provider === p.id)
                 if (!ms.length && !(p.builtin && !p.ready && !p.disabled)) return null
@@ -102,11 +101,6 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
                     {!ms.length && (
                       <p className="px-2.5 pb-2 text-xs text-muted-foreground">
                         {p.error}
-                        {p.needs_connect && (
-                          <button type="button" onClick={() => { setAt(null); navigate('settings', '#connections') }} className="ml-1.5 cursor-pointer font-medium text-primary-text hover:underline">
-                            {t('去连接')}
-                          </button>
-                        )}
                       </p>
                     )}
                     {ms.map((m) => (
@@ -181,7 +175,7 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
 }
 
 /** 菜单里本机 Agent 的模型已经在「Claude Code（本机）」这类分组下面：只写模型名，没选具体模型的是「默认」（底部按钮仍显示完整名字） */
-function menuLabel(m: ModelConfig) {
+export function menuLabel(m: ModelConfig) {
   if (!m.agent) return m.label
   const rest = m.label.split(' · ').slice(1).join(' · ')
   if (!m.id.includes('/')) return rest || t('默认（跟它自己的设置）')

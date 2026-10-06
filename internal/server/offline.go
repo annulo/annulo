@@ -254,20 +254,12 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 
 // localAssetFile：本机函数下载 / 请求的是本机存的上传文件（http://127.0.0.1:端口/_shuttle/uploaded/…）时，直接读文件
 // （出网规则不许访问本机，平常这类地址会被拦下）。不是返回 ""。
+// 端口不限：地址存进数据时的端口，和现在监听的可能不一样（7799 被占时会换端口）。
 func (s *Server) localAssetFile(rawURL string) string {
-	for _, pre := range []string{"http://" + s.cfg.Addr() + assetsURL, "http://localhost:" + portOf(s.cfg.Addr()) + assetsURL} {
-		if name, ok := strings.CutPrefix(rawURL, pre); ok && assetNameRe.MatchString(name) {
-			return filepath.Join(s.assetsDir(), name)
-		}
+	if m := localAssetRe.FindStringSubmatch(rawURL); m != nil && m[0] == rawURL {
+		return filepath.Join(s.assetsDir(), m[1])
 	}
 	return ""
-}
-
-func portOf(addr string) string {
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		return addr[i+1:]
-	}
-	return addr
 }
 
 // ---- 离线项目转成在线项目 ----

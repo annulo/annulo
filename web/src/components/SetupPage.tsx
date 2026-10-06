@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Cloud, ExternalLink, FolderOpen, LayoutTemplate, Loader2, MonitorSmartphone, Sparkles } from 'lucide-react'
+import { Cloud, ExternalLink, FolderOpen, LayoutTemplate, Link2, Loader2, MonitorSmartphone, Sparkles, X } from 'lucide-react'
 import { useTheme } from '@/lib/theme'
 import BackendPicker from '@/components/BackendPicker'
 import CreghtClusterSelect from '@/components/CreghtClusterSelect'
@@ -7,45 +7,19 @@ import { Button } from '@/components/ui/button'
 import { useCreghtConnect } from '@/lib/creghtConnect'
 import { t } from '@/lib/i18n'
 
-const SKIP_KEY = 'annulo.setup.skipConnect'
-
-function skipped() {
-  try {
-    return localStorage.getItem(SKIP_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
 /**
- * 还没有选项目。没连 creght 时先问一步要不要连（连上多出什么），能跳过；跳过或已连就是选项目、新建项目。
+ * 还没有选项目：选项目、新建项目。
+ * 没连 creght 时底部只有一个「连接 creght」按钮，点开弹窗说明连上多出什么（不单独占一步，不连是常态）。
  * 连着 creght：能打开 creght 上已有的项目、选数据存云端还是本机、用 creght 的模板（BackendPicker 按连没连显示）。
  */
 export default function SetupPage({ loggedIn, onDone }: { loggedIn: boolean; onDone: () => void }) {
   const [theme] = useTheme()
-  const [step, setStep] = useState<'intro' | 'pick'>(() => (loggedIn || skipped() ? 'pick' : 'intro'))
-  const logo = <img src={theme === 'dark' ? '/_shuttle/annulo-dark.svg' : '/_shuttle/annulo-light.svg'} alt="" className="h-12" />
-
-  if (step === 'intro')
-    return (
-      <ConnectIntro
-        logo={logo}
-        onSkip={() => {
-          try {
-            localStorage.setItem(SKIP_KEY, '1')
-          } catch {
-            // 记不住就下次再问
-          }
-          setStep('pick')
-        }}
-      />
-    )
-
+  const [connecting, setConnecting] = useState(false)
   return (
     <div className="flex min-h-dvh items-center justify-center overflow-y-auto bg-muted/40 p-6">
       <div className="w-full max-w-xl space-y-8">
         <div className="flex flex-col items-center space-y-4 text-center">
-          {logo}
+          <img src={theme === 'dark' ? '/_shuttle/annulo-dark.svg' : '/_shuttle/annulo-light.svg'} alt="" className="h-12" />
           <div className="space-y-2">
             <h1 className="text-xl font-bold tracking-tight">{t('选择项目')}</h1>
             <p className="text-sm leading-relaxed text-muted-foreground">{t('一个项目就是一个业务，有自己的数据、后台页面和对话历史。接着用已有的，或者新建一个。')}</p>
@@ -57,14 +31,15 @@ export default function SetupPage({ loggedIn, onDone }: { loggedIn: boolean; onD
             <CreghtClusterSelect onChanged={() => location.reload()} className="h-8 text-xs" />
           </div>
         ) : (
-          <p className="text-center text-xs text-muted-foreground">
-            <button type="button" onClick={() => setStep('intro')} className="font-semibold text-foreground hover:underline">
+          <div className="flex justify-center">
+            <Button variant="ghost" size="sm" onClick={() => setConnecting(true)} className="gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+              <Link2 className="size-3.5" />
               {t('连接 creght')}
-            </button>{' '}
-            {t('后能把数据存到云端、打开 creght 上的项目、用 creght 的模板。')}
-          </p>
+            </Button>
+          </div>
         )}
       </div>
+      {connecting && <ConnectDialog onClose={() => setConnecting(false)} />}
     </div>
   )
 }
@@ -77,54 +52,51 @@ const BENEFITS = [
   { icon: MonitorSmartphone, title: '手机上打开', desc: '在手机、别的电脑上看后台、点发布，这台电脑开着时帮你执行。' },
 ] as const
 
-/** 第一次打开、没连 creght：说明连上多出什么，连接或者跳过。 */
-function ConnectIntro({ logo, onSkip }: { logo: React.ReactNode; onSkip: () => void }) {
+/** 连接 creght 的弹窗：连上多出什么、选集群、去浏览器授权（连上后整页刷新）。 */
+export function ConnectDialog({ onClose }: { onClose: () => void }) {
   const { connect, waiting, url, err } = useCreghtConnect()
   return (
-    <div className="flex min-h-dvh items-center justify-center overflow-y-auto bg-muted/40 p-6">
-      <div className="w-full max-w-xl space-y-7">
-        <div className="flex flex-col items-center space-y-4 text-center">
-          {logo}
-          <div className="space-y-2">
-            <h1 className="text-xl font-bold tracking-tight">{t('要连接 creght 吗？')}</h1>
-            <p className="text-sm leading-relaxed text-muted-foreground">{t('Annulo 不连也能用。连上 creght 账号，多出这些：')}</p>
-          </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal="true" aria-label={t('连接 creght')} className="flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+          <span className="text-sm font-bold">{t('连接 creght')}</span>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label={t('关闭')} className="rounded-lg text-muted-foreground hover:text-foreground">
+            <X className="size-[18px]" />
+          </Button>
         </div>
-        <ul className="space-y-2 rounded-2xl border border-border bg-background p-3">
-          {BENEFITS.map((b) => (
-            <li key={b.title} className="flex items-start gap-3 rounded-xl px-2 py-2">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
-                <b.icon className="size-4" />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-[13px] font-semibold">{t(b.title)}</span>
-                <span className="block text-xs leading-relaxed text-muted-foreground">{t(b.desc)}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button onClick={connect} disabled={waiting} className="min-w-36">
-              {waiting ? <Loader2 className="animate-spin" /> : <ExternalLink />}
-              {waiting ? t('等你在浏览器里同意…') : t('连接 creght')}
-            </Button>
-            <Button variant="outline" onClick={onSkip}>
-              {t('先不连，在这台电脑上用')}
-            </Button>
-          </div>
+        <div className="space-y-4 overflow-y-auto p-5">
+          <p className="text-sm text-muted-foreground">{t('Annulo 不连也能用。连上 creght 账号，多出这些：')}</p>
+          <ul className="space-y-3">
+            {BENEFITS.map((b) => (
+              <li key={b.title} className="flex items-start gap-3">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+                  <b.icon className="size-3.5" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-semibold">{t(b.title)}</span>
+                  <span className="block text-xs leading-relaxed text-muted-foreground">{t(b.desc)}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <CreghtClusterSelect onChanged={() => {}} className="h-8 text-xs" />
           {waiting && url && (
-            <p className="text-center text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t('浏览器没有自动打开？')}{' '}
               <a href={url} target="_blank" rel="noreferrer" className="font-semibold text-foreground hover:underline">
                 {t('打开授权页')}
               </a>
             </p>
           )}
-          {err && <p className="text-center text-xs break-all text-destructive">{err}</p>}
-          <p className="text-center text-xs leading-relaxed text-muted-foreground">{t('不连的话：项目和数据都在这台电脑上，用自己的模型 key 或这台电脑上的 Claude Code / Codex。以后随时能在 设置 → 连接 里连。')}</p>
-          <div className="mx-auto w-56">
-            <CreghtClusterSelect onChanged={() => {}} className="h-8 text-xs" />
+          {err && <p className="text-xs break-all text-destructive">{err}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              {t('取消')}
+            </Button>
+            <Button size="sm" onClick={connect} disabled={waiting} className="gap-1.5">
+              {waiting ? <Loader2 className="size-3.5 animate-spin" /> : <ExternalLink className="size-3.5" />}
+              {waiting ? t('等你在浏览器里同意…') : t('去浏览器授权')}
+            </Button>
           </div>
         </div>
       </div>

@@ -4,7 +4,7 @@ import { t } from '@/lib/i18n'
 
 /**
  * 连接 creght（平台的 OAuth）：在浏览器里打开授权页，等它跳回本机；连上以后整页刷新（顶栏、模型、项目、模板都跟着变）。
- * 设置 → 连接 和第一次打开的引导页（SetupPage）共用。
+ * 设置 → 连接 和选择项目页的连接弹窗（SetupPage）共用。
  */
 export function useCreghtConnect() {
   const [waiting, setWaiting] = useState(false)

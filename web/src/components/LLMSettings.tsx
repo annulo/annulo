@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Brain, Check, CheckCircle2, Eye, Loader2, MessageSquare, Pencil, Plus, RotateCw, Trash2, XCircle } from 'lucide-react'
-import { getJSON, post, priceText, THINKING_LABEL, type ModelConfig, type ModelSettings, type ProviderConfig, type Thinking } from '@/lib/api'
+import { getJSON, normModelSettings, post, priceText, THINKING_LABEL, type ModelConfig, type ModelSettings, type ProviderConfig, type Thinking } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Segmented, Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { menuLabel } from '@/components/ModelMenu'
+import { ModelIcon } from '@/lib/modelBrand'
 import { t } from '@/lib/i18n'
-import { navigate } from '@/lib/router'
 
 const APIS = [
   { value: 'openai-completions', label: 'OpenAI 兼容（Chat Completions）', hint: 'DeepSeek、豆包、Kimi 和各家网关都用这个。Base URL 写到 /v1（火山方舟是 /api/v3）。' },
@@ -49,7 +50,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshingAgents, setRefreshingAgents] = useState(false)
 
-  const load = (refresh = false) => getJSON<ModelSettings>(`settings/llm${refresh ? '?refresh=1' : ''}`).then(setSt)
+  const load = (refresh = false) => getJSON<ModelSettings>(`settings/llm${refresh ? '?refresh=1' : ''}`).then((s) => setSt(normModelSettings(s)))
   useEffect(() => {
     load()
   }, [])
@@ -58,7 +59,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
     setErr('')
     try {
       const r = await fn()
-      setSt(await r.json())
+      setSt(normModelSettings(await r.json()))
       onSaved()
     } catch (e) {
       setErr((e as Error).message)
@@ -119,7 +120,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
         <ModelEditor initial={m} providers={st.providers} onCancel={() => setEditing(null)} onSaved={saved} />
       </div>
     ) : (
-      <div key={m.id} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
+      <div key={m.id} className="group flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-[13px] font-bold">{m.label}</span>
@@ -144,8 +145,15 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* 「使用」鼠标移到这一行才出现，不然一列按钮太抢眼 */}
           {m.id !== st.active && (
-            <Button size="sm" variant="outline" onClick={() => act(() => post('settings/llm', { active: m.id }, 'PUT'))} disabled={!m.ready}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => act(() => post('settings/llm', { active: m.id }, 'PUT'))}
+              disabled={!m.ready}
+              className="opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+            >
               {t('使用')}
             </Button>
           )}
@@ -200,7 +208,12 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                 { value: '', label: t('跟对话用同一个'), sub: active ? t('现在是 {name}', { name: active.label }) : undefined, icon: <MessageSquare className="size-3.5" /> },
                 ...st.models
                   .filter((m) => m.ready || m.id === st.title_model)
-                  .map((m) => ({ value: m.id, label: m.label, sub: m.builtin ? `${t('creght 平台')} · ${m.model}` : m.agent ? m.model : `${providerName(m.provider)} · ${m.model}` })),
+                  // 大字是模型名，小字是服务商（模型 id 和名字不一样时补在后面；本机 agent 的 id 是别名，不显示）
+                  .map((m) => {
+                    const label = menuLabel(m)
+                    const provider = m.builtin ? t('creght 平台') : providerName(m.provider)
+                    return { value: m.id, label, sub: m.agent || m.model === label ? provider : `${provider} · ${m.model}`, icon: ModelIcon({ m }) }
+                  }),
               ]}
             />
           </div>
@@ -214,7 +227,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-medium whitespace-nowrap">{t('服务商')}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">{t('模型从哪里调用。creght 平台登录就能用，按 AI 积分计费；也可以加自己的 key。')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{creght ? t('模型从哪里调用。creght 平台登录就能用，按 AI 积分计费；也可以加自己的 key。') : t('模型从哪里调用：加自己的 key。')}</p>
           </div>
           {editing === null && (
             <Button size="sm" variant="outline" onClick={() => setEditing({ kind: 'provider' })}>
@@ -236,11 +249,6 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                   {creght.disabled ? t('已关闭：平台的模型不出现在选择菜单里') : creght.ready ? t('用登录的 creght 账号，{n} 个模型，按 AI 积分计费', { n: platformModels.length }) : creght.error}
                 </div>
               </div>
-              {creght.needs_connect && !creght.disabled && (
-                <Button size="sm" variant="outline" onClick={() => navigate('settings', '#connections')}>
-                  {t('连接')}
-                </Button>
-              )}
               <Button
                 size="icon-sm"
                 variant="ghost"
@@ -294,7 +302,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-medium whitespace-nowrap">{t('模型')}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">{t('没选过的话默认用 creght 平台最便宜的模型（按 agent 的用量折算：大部分输入命中缓存）。')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{creght ? t('没选过的话默认用 creght 平台最便宜的模型（按 agent 的用量折算：大部分输入命中缓存）。') : t('对话用哪个模型，在这里或对话框底部切换。')}</p>
           </div>
           {editing === null && (
             <Button size="sm" variant="outline" onClick={() => setEditing({ kind: 'model' })}>
@@ -378,7 +386,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                       disabled={refreshingAgents}
                       onClick={async () => {
                         setRefreshingAgents(true)
-                        await getJSON<ModelSettings>('settings/llm?refresh=agents').then(setSt).finally(() => setRefreshingAgents(false))
+                        await getJSON<ModelSettings>('settings/llm?refresh=agents').then((s) => setSt(normModelSettings(s))).finally(() => setRefreshingAgents(false))
                       }}
                     >
                       <RotateCw className={cn(refreshingAgents && 'animate-spin')} />

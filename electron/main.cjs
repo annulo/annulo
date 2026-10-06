@@ -16,8 +16,24 @@ app.setName('Annulo')
 const env = (key) => process.env['ANNULO_' + key] || process.env['SHUTTLE_' + key]
 const dataDir = env('DIR') || migrateDataDir(os.homedir()) // ~/.annulo，老的 ~/.shuttle 第一次迁过来（datadir.cjs）
 const logDir = path.join(dataDir, 'logs')
-const panelURL = `http://127.0.0.1:${env('PORT') || '7799'}/_shuttle/`
-const origin = new URL(panelURL).origin
+// 服务的端口：环境变量指定的为准；否则读服务写的 <数据目录>/port（7799 被别的程序占了时服务会换一个），没有就是 7799
+const servicePort = () => {
+  if (env('PORT')) return env('PORT')
+  try { const p = fs.readFileSync(path.join(dataDir, 'port'), 'utf8').trim(); if (/^\d+$/.test(p)) return p } catch {}
+  return '7799'
+}
+let panelURL = `http://127.0.0.1:${servicePort()}/_shuttle/`
+let origin = new URL(panelURL).origin
+// 端口变了：地址跟着换，等着打开的页面（深链接算出来的 target）也换到新端口
+function refreshPort() {
+  const next = `http://127.0.0.1:${servicePort()}/_shuttle/`
+  if (next === panelURL) return
+  const old = origin
+  panelURL = next
+  origin = new URL(panelURL).origin
+  if (target.startsWith(old)) target = origin + target.slice(old.length)
+  log(`Service port: ${panelURL}`)
+}
 const binDir = app.isPackaged ? path.join(process.resourcesPath, 'bin') : env('ELECTRON_BIN_DIR') || (process.platform === 'win32' ? path.join(__dirname, '../dist/electron/windows', process.arch, 'bin') : path.join(__dirname, '../dist/electron/bin'))
 fs.mkdirSync(logDir, { recursive: true })
 fs.mkdirSync(path.join(dataDir, 'electron-profile'), { recursive: true })
@@ -35,6 +51,7 @@ function log(message) {
 }
 
 function status() {
+  refreshPort()
   return new Promise(resolve => {
     const request = http.get(new URL('api/status', panelURL), { headers: { 'X-Shuttle': '1' } }, response => {
       let body = ''

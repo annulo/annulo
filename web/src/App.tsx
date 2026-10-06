@@ -15,6 +15,7 @@ import SettingsPage from '@/components/SettingsPage'
 import UsagePage from '@/components/UsagePage'
 import SetupPage from '@/components/SetupPage'
 import { AccountMenu } from '@/components/AccountMenu'
+import { AppMenu } from '@/components/AppMenu'
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { setLocale, t, useLocale } from '@/lib/i18n'
@@ -259,11 +260,7 @@ export default function App() {
       {/* 顶栏像 Chrome 的标签条：用侧栏色，当前标签用页面色和下面连成一片、贴着底边；logo、项目名和右边的按钮在顶栏里上下居中 */}
       <header className="relative z-40 grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto] gap-3 bg-sidebar px-4">
         <div className="flex h-full min-w-0 items-center gap-4">
-          <a href="/_shuttle/" className="mx-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-accent" aria-label={t('Annulo 首页')}>
-            <img src={theme === 'dark' ? '/_shuttle/annulo-dark.svg' : '/_shuttle/annulo-light.svg'} alt="" className="h-6" />
-          </a>
-          <div className="-ml-px h-7 w-px shrink-0 bg-border" />
-          <span className="shrink-0 text-xs font-bold">Annulo</span>
+          <AppMenu theme={theme} onToggleTheme={toggleTheme} loggedIn={!!status?.creght.logged_in} />
           {status?.backend && (
             <>
               <span className="-mx-2 shrink-0 text-muted-foreground/60" aria-hidden>
@@ -287,12 +284,12 @@ export default function App() {
             </Tip>
           )}
           {updateButton}
-          <Tip label={t('刷新运营后台')}>
-            <Button variant="ghost" size="icon-sm" onClick={reloadSite} aria-label={t('刷新运营后台')} className="rounded-lg text-muted-foreground hover:text-foreground">
+          <Tip label={t('刷新页面')}>
+            <Button variant="ghost" size="icon-sm" onClick={reloadSite} aria-label={t('刷新页面')} className="rounded-lg text-muted-foreground hover:text-foreground">
               <RotateCw className="size-[18px]" />
             </Button>
           </Tip>
-          {status?.creght.user && <AccountMenu user={status.creght.user} host={status.creght.api_host} onLoggedOut={loadStatus} theme={theme} onToggleTheme={toggleTheme} />}
+          {status?.creght.user && <AccountMenu user={status.creght.user} host={status.creght.api_host} onLoggedOut={loadStatus} />}
         </div>
       </header>
       {status?.project_requires && (

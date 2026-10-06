@@ -19,7 +19,7 @@ export default function SecretSettings() {
   const [confirmDel, setConfirmDel] = useState('')
 
   useEffect(() => {
-    getJSON<State>('settings/secrets').then(setSt)
+    getJSON<State>('settings/secrets').then((s) => setSt({ list: s.list ?? [], needed: s.needed ?? [] }))
   }, [])
 
   const save = async (n = name) => {
@@ -27,7 +27,7 @@ export default function SecretSettings() {
     setErr('')
     try {
       const r = await post('settings/secrets', { name: n.trim(), value: value.trim() }, 'PUT')
-      setSt({ ...(await r.json()), needed: st?.needed ?? [] })
+      setSt({ list: (await r.json()).list ?? [], needed: st?.needed ?? [] })
       setName('')
       setValue('')
     } catch (e) {
@@ -41,7 +41,7 @@ export default function SecretSettings() {
     setConfirmDel('')
     try {
       const r = await post(`settings/secrets/${n}`, undefined, 'DELETE')
-      setSt({ ...(await r.json()), needed: st?.needed ?? [] })
+      setSt({ list: (await r.json()).list ?? [], needed: st?.needed ?? [] })
     } catch (e) {
       setErr((e as Error).message)
     }

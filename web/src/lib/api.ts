@@ -98,7 +98,6 @@ export type ProviderConfig = {
   ready: boolean
   error: string
   agent?: boolean // 本机的外部 agent（Claude Code / Codex）
-  needs_connect?: boolean // creght 平台没连上账号：给「连接」入口
   disabled?: boolean // 用户关掉了：它的模型不出现在列表和选择菜单里
 }
 
@@ -133,6 +132,11 @@ export type ModelSettings = {
   auto_title: boolean
   title_model: string
   agents?: LocalAgent[]
+}
+
+/** settings/llm 的返回补齐：列表字段缺了或是 null（老版本后端、没连 creght 也没加服务商）都当空数组，界面直接 .filter / .map */
+export function normModelSettings(s: ModelSettings): ModelSettings {
+  return { ...s, providers: s.providers ?? [], models: s.models ?? [], thinking_levels: s.thinking_levels ?? [], agents: s.agents ?? [] }
 }
 
 // 价格简写：输入 / 缓存 / 输出，每百万 token 的积分
