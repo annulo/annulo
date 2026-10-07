@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,7 +62,9 @@ func TestTemplateUpgradeInstallsPluginsBeforeMerge(t *testing.T) {
 	wsgit.Commit(dir, "项目自己的改动")
 
 	// 模板 v2：要社媒插件，channels.ts 也改了（和项目冲突）
-	tplTag(map[string]string{"tpl/annulo.json": `{"plugins": {"social": "` + pluginRepo + `#social"}}` + "\n", "tpl/local/channels.ts": "import '../plugins/social/local/stats'\n"}, "v2.0.0")
+	// 路径用 json.Marshal 拼进 JSON：Windows 的 C:\Users\… 直接拼进去，反斜杠会被当成转义，JSON 就坏了
+	spec, _ := json.Marshal(map[string]any{"plugins": map[string]string{"social": filepath.ToSlash(pluginRepo) + "#social"}})
+	tplTag(map[string]string{"tpl/annulo.json": string(spec) + "\n", "tpl/local/channels.ts": "import '../plugins/social/local/stats'\n"}, "v2.0.0")
 
 	installed := s.installTemplatePlugins(ctx, dir, tpl, 0)
 	if len(installed) != 1 || installed[0] != "social" {
