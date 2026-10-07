@@ -25,7 +25,7 @@ export default function SetupPage({ loggedIn, onDone }: { loggedIn: boolean; onD
             <p className="text-sm leading-relaxed text-muted-foreground">{t('一个项目就是一个业务，有自己的数据、后台页面和对话历史。接着用已有的，或者新建一个。')}</p>
           </div>
         </div>
-        <BackendPicker onDone={onDone} />
+        <BackendPicker inline onDone={onDone} />
         {loggedIn ? (
           <div className="mx-auto w-56">
             <CreghtClusterSelect onChanged={() => location.reload()} className="h-8 text-xs" />
@@ -65,7 +65,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
           </Button>
         </div>
         <div className="space-y-4 overflow-y-auto p-5">
-          <p className="text-sm text-muted-foreground">{t('Annulo 不连也能用。连上 creght 账号，多出这些：')}</p>
+          <p className="text-sm text-muted-foreground">{t('Annulo 不连也能用。连上 creght 账号，可以使用以下能力：')}</p>
           <ul className="space-y-3">
             {BENEFITS.map((b) => (
               <li key={b.title} className="flex items-start gap-3">

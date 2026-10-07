@@ -17,7 +17,7 @@ import (
 
 // 页面上传文件拿公开地址：POST local/upload（multipart，字段 file），传到运营后台所在站点的 creght 素材里，
 // 返回 { url, path, size, content_type, existed }。素材库、社媒配图、文章插图这些要给外部平台用的文件走它。
-// 对话里附的图片走 agent/uploads（只存本机，给模型看），和这个不是一回事；助手自己传文件用 creght upload（同一套）。
+// 对话里附的图片走 agent/uploads（只存本机，给模型看），和这个不是一回事；助手自己传文件用 annulo upload（转发到这里）。
 //
 // 直接调 creght 的素材上传接口（和 creght upload 一样，用 CLI 的登录），文件先读进内存算哈希，所以设个上限。
 

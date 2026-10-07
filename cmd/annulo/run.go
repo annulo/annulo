@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/i18n"
 
 	"github.com/spf13/cobra"
@@ -18,13 +19,13 @@ import (
 	"github.com/annulo/annulo/internal/config"
 )
 
-// shuttle run <文件.函数> --input '{…}'：执行运营后台的本机函数（local/*.ts），和页面上按按钮是同一条路。
+// annulo run <文件.函数> --input '{…}'：执行运营后台的本机函数（local/*.ts），和页面上按按钮是同一条路。
 // 调的是本机正在跑的 Shuttle（函数要用它的登录态、业务表、密钥）。agent 写完函数用它试跑。
 func runCmd() *cobra.Command {
 	var input string
 	cmd := &cobra.Command{
 		Use:   "run <文件.函数>",
-		Short: "执行运营后台的本机函数（local/*.ts），比如 shuttle run geo.check --input '{\"channel_id\":\"...\"}'",
+		Short: "执行运营后台的本机函数（local/*.ts），比如 annulo run geo.check --input '{\"channel_id\":\"...\"}'",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -101,7 +102,8 @@ func listFunctions(base string) error {
 
 // runFunction 读 SSE：progress / log 打到 stderr，结果（JSON）打到 stdout，出错时退出码 1。
 func runFunction(base, fn string, input any) error {
-	resp, err := shuttleReq("POST", base+"local/run", map[string]any{"fn": fn, "input": input})
+	// 助手在对话里跑的：带上对话 id（Annulo 给助手的 bash 设了 ANNULO_CHAT_ID），本机函数里是 ctx.chat_id
+	resp, err := shuttleReq("POST", base+"local/run", map[string]any{"fn": fn, "input": input, "chat_id": brand.Env("CHAT_ID")})
 	if err != nil {
 		return err
 	}

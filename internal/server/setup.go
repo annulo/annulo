@@ -452,6 +452,18 @@ func (s *Server) apiSetupRun(w http.ResponseWriter, r *http.Request) {
 	default:
 		err = i18n.New("action 只能是 new 或 use", "action must be new or use")
 	}
+	if err == nil && in.Action == "new" {
+		// 模板要的插件一起装上（docs/plugins.md）
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		if len(s.installProjectPlugins(ctx, ws.Dir)) > 0 {
+			out := map[string]any{}
+			pushAfterMerge(ctx, ws.Dir, out)
+			if e, ok := out["push_error"]; ok {
+				log.Printf("装插件后推到预览失败：%v", e)
+			}
+		}
+		cancel()
+	}
 	if err == nil {
 		s.cfg.Backend = ws.ProjectID
 		err = s.cfg.Save()

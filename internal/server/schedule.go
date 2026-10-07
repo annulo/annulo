@@ -18,6 +18,7 @@ import (
 
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/localfn"
+	"github.com/annulo/annulo/internal/plugin"
 	"github.com/annulo/annulo/internal/tasks"
 )
 
@@ -61,8 +62,9 @@ const promptRunTimeout = 30 * time.Minute
 
 // scheduledNote 接在定时提示前面：告诉助手用户不在场。按界面语言出（这段话也显示在对话里）
 func scheduledNote() string {
-	return i18n.T("（这是定时任务「%s」自动发起的，这段对话的 id 是 %s（要记下结果出自哪段对话时用它）。用户现在不在：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
-		"(This chat was started automatically by the scheduled task \"%s\"; its chat id is %s — use it when recording which chat produced a result. The user isn't here: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n")
+	// 不再写对话 id：要记「出自哪段对话」的，本机函数自己读 ctx.chat_id（annulo run 带过去），不用助手照抄
+	return i18n.T("（这是定时任务「%s」自动发起的。用户现在不在：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
+		"(This chat was started automatically by the scheduled task \"%s\". The user isn't here: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n")
 }
 
 var atRe = regexp.MustCompile(`^([01]?\d|2[0-3]):([0-5]\d)$`)
@@ -287,7 +289,7 @@ func parseSchedules(root string) ([]scheduleDef, error) {
 		if err := json.Unmarshal(f.Data, &d); err != nil {
 			return nil, i18n.Errorf("%s 格式不对：%w", "%s is malformed: %w", f.Rel, err)
 		}
-		d.ID = f.Key
+		d.ID = plugin.Name(f.Plugin, f.Key) // 插件的带插件 id：plugins/social/schedules/x.collect.json → social/x.collect
 		d.Prompt = strings.TrimSpace(d.Prompt)
 		switch {
 		case btoi(d.Fn != "")+btoi(d.Prompt != "")+btoi(d.Task != "") > 1:
@@ -296,11 +298,11 @@ func parseSchedules(root string) ([]scheduleDef, error) {
 			if _, err := tasks.Load(root, d.Task); err != nil {
 				return nil, i18n.Errorf("%s：%w", "%s: %w", f.Rel, err)
 			}
-			if !chatKeyRe.MatchString(d.ID) {
+			if !chatKeyRe.MatchString(f.Key) {
 				return nil, i18n.Errorf("%s：task 的文件名只能用字母、数字、- 和 _", "%s: a task's file name may only use letters, digits, - and _", f.Rel)
 			}
 		case d.Prompt != "":
-			if !chatKeyRe.MatchString(d.ID) {
+			if !chatKeyRe.MatchString(f.Key) {
 				return nil, i18n.Errorf("%s：prompt 的文件名只能用字母、数字、- 和 _（比如 weekly-report.json）", "%s: a prompt's file name may only use letters, digits, - and _ (e.g. weekly-report.json)", f.Rel)
 			}
 		default:
@@ -421,7 +423,7 @@ func (s *Server) startScheduled(sp schedProject, d scheduleDef) bool {
 	run := &scheduleRun{StartedAt: start}
 	if current && (d.Task != "" || d.Prompt != "") {
 		// 对话 id 先定下来，跑的过程中界面的「查看对话」就能打开这一次的
-		run.ChatID = fmt.Sprintf("sched-%s-%d", key, start.Unix())
+		run.ChatID = fmt.Sprintf("sched-%s-%d", plugin.ChatKey(key), start.Unix())
 	}
 	p.running[key] = run
 	sc.mu.Unlock()
@@ -486,17 +488,27 @@ func (s *Server) runScheduledPrompt(d scheduleDef, chatID string, start time.Tim
 	if name == "" {
 		name = d.ID
 	}
-	prompt := fmt.Sprintf(scheduledNote(), name, chatID) + d.Prompt
+	prompt := fmt.Sprintf(scheduledNote(), name) + d.Prompt
 	return s.runBackgroundChat(chatID, i18n.T("定时：", "Scheduled: ")+name, prompt, start)
 }
 
 // runBackgroundChat 开一段新对话，把 prompt 交给助手跑完一轮（和用户在界面上发消息走同一条路：
 // 边跑边存、界面能续看、结束自动提交项目）。返回助手最后的回答。定时的提示和项目的任务都走它。
 func (s *Server) runBackgroundChat(chatID, title, prompt string, start time.Time) (string, error) {
+	exec, err := s.beginBackgroundChat(chatID, title, prompt, start)
+	if err != nil {
+		return "", err
+	}
+	return exec()
+}
+
+// beginBackgroundChat 先把对话存下来、登记成正在跑，返回真正跑这一轮的函数（调用方放到后台）。
+// 页面拿到 chat_id 马上就去打开这段对话：要在返回 chat_id 之前做完这一步，不然会读到「对话不存在」。
+func (s *Server) beginBackgroundChat(chatID, title, prompt string, start time.Time) (func() (string, error), error) {
 	startedAt := start.UnixMilli()
 	user, _ := json.Marshal(uiMessage{ID: "u" + chatID, Role: "user", Parts: []uiPart{{Type: "text", Text: prompt}}})
 	if err := s.agent.SaveMessage(chatID, user, title, startedAt); err != nil {
-		return "", err
+		return nil, err
 	}
 	// 标题直接用任务名，不再让模型起名
 	if err := s.agent.SetTitle(chatID, title, "auto"); err != nil {
@@ -506,13 +518,15 @@ func (s *Server) runBackgroundChat(chatID, title, prompt string, start time.Time
 	s.runsMu.Lock()
 	s.runs[chatID] = run
 	s.runsMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), promptRunTimeout)
-	defer cancel()
-	answer, err := s.execRun(ctx, chatID, prompt, nil, startedAt, run, nil)
-	if err != nil && ctx.Err() != nil {
-		err = i18n.Errorf("超过 %s 没跑完，已停止", "Not finished after %s, so it was stopped", promptRunTimeout)
-	}
-	return answer, err
+	return func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), promptRunTimeout)
+		defer cancel()
+		answer, err := s.execRun(ctx, chatID, prompt, nil, startedAt, run, nil)
+		if err != nil && ctx.Err() != nil {
+			err = i18n.Errorf("超过 %s 没跑完，已停止", "Not finished after %s, so it was stopped", promptRunTimeout)
+		}
+		return answer, err
+	}, nil
 }
 
 func truncateRunes(s string, n int) string {
@@ -611,7 +625,6 @@ func (s *Server) apiSchedules(w http.ResponseWriter, r *http.Request, rest strin
 		writeJSON(w, s.scheduleResponse())
 		return
 	}
-	id, action, _ := strings.Cut(rest, "/")
 	pid := r.URL.Query().Get("project")
 	var sp *schedProject
 	for _, x := range s.scheduleProjects() {
@@ -625,6 +638,7 @@ func (s *Server) apiSchedules(w http.ResponseWriter, r *http.Request, rest strin
 		fail(w, http.StatusNotFound, i18n.Errorf("没有这个项目：%s", "No such project: %s", pid))
 		return
 	}
+	id, action := splitNameAction(sp.Dir, rest)
 	sc := &s.sched
 	sc.mu.Lock()
 	p := s.proj(sp.ID, sp.Dir)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 
 	"github.com/sky-valley/pi/coding"
 )
@@ -44,13 +45,17 @@ type skillState struct {
 
 func (a *Agent) builtinDir() string { return filepath.Join(a.cfg.Dir, "builtin-skills") }
 
-// workspaceSkillsDir 是运营后台项目里的 skill：业务流程（体检、内容、GEO…）跟着运营后台走，
-// 模板复制时一起带走，agent 改后台模块时顺手改它（调用方持有 a.mu 或只读场景）。
-func (a *Agent) workspaceSkillsDir() string {
+// workspaceSkillsDirs 是运营后台项目里的 skill：业务流程（体检、内容、GEO…）跟着运营后台走，
+// 模板复制时一起带走，agent 改后台模块时顺手改它；再加上装了的插件的 plugins/<id>/skills（调用方持有 a.mu 或只读场景）。
+func (a *Agent) workspaceSkillsDirs() []string {
 	if a.cwd == "" {
-		return ""
+		return nil
 	}
-	return filepath.Join(a.cwd, "skills")
+	var out []string
+	for _, id := range plugin.Sources(a.cwd) {
+		out = append(out, filepath.Join(plugin.Root(a.cwd, id), "skills"))
+	}
+	return out
 }
 func (a *Agent) installedDir() string { return filepath.Join(a.cfg.Dir, "skills") }
 func (a *Agent) skillStateFile() string {
@@ -76,8 +81,7 @@ func localSkillRoots() []string {
 	return []string{filepath.Join(home, ".agents", "skills"), filepath.Join(home, ".claude", "skills")}
 }
 
-// InstallSkills 启动时调用：写出内置 skill；第一次运行时把本机的 creght skill 软链进来
-// （creght skill 跟着平台更新，软链能拿到最新版）。
+// InstallSkills 启动时调用：写出内置 skill（每次覆盖），建好已安装 skill 的目录。
 func (a *Agent) InstallSkills() error {
 	os.RemoveAll(a.builtinDir())
 	err := fs.WalkDir(builtinSkills, "skills", func(p string, d fs.DirEntry, err error) error {
@@ -100,31 +104,7 @@ func (a *Agent) InstallSkills() error {
 	// 老版本把 skill 放在工作目录的 .pi/skills 下，清掉
 	os.RemoveAll(filepath.Join(a.cwd, ".pi"))
 
-	if err := os.MkdirAll(a.installedDir(), 0o755); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(filepath.Join(a.installedDir(), "creght")); os.IsNotExist(err) && !a.firstRunDone() {
-		for _, root := range localSkillRoots() {
-			src := filepath.Join(root, "creght")
-			if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err == nil {
-				os.Symlink(src, filepath.Join(a.installedDir(), "creght"))
-				break
-			}
-		}
-	}
-	a.markFirstRun()
-	return nil
-}
-
-func (a *Agent) firstRunDone() bool {
-	_, err := os.Stat(a.skillStateFile())
-	return err == nil
-}
-
-func (a *Agent) markFirstRun() {
-	if !a.firstRunDone() {
-		a.writeSkillState(skillState{Disabled: []string{}})
-	}
+	return os.MkdirAll(a.installedDir(), 0o755)
 }
 
 func loadDir(dir, source string) []SkillInfo {
@@ -164,9 +144,9 @@ func (a *Agent) ListSkills() (active, local []SkillInfo) {
 		active = append(active, s)
 	}
 	a.mu.Lock()
-	wsDir := a.workspaceSkillsDir()
+	wsDirs := a.workspaceSkillsDirs()
 	a.mu.Unlock()
-	if wsDir != "" {
+	for _, wsDir := range wsDirs {
 		for _, s := range loadDir(wsDir, "workspace") {
 			if seen[s.Name] {
 				continue
@@ -212,7 +192,7 @@ func (a *Agent) sessionSkills() *[]coding.Skill {
 		seen[s.Name] = true
 		out = append(out, s)
 	}
-	if dir := a.workspaceSkillsDir(); dir != "" {
+	for _, dir := range a.workspaceSkillsDirs() {
 		ws, _ := coding.LoadSkillsFromDir(dir)
 		for _, s := range ws {
 			if !seen[s.Name] && !off[s.Name] {

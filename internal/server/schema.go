@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 )
 
 // 运营后台的业务表由运营后台自己声明：项目根目录的 tables/ 目录，一张表一个文件 tables/<key>.json（{ name, desc, json_schema }），文件名就是表的 key。
+// 插件的表在 plugins/<id>/tables/<key>.json，表名是 <id>_<key>（docs/plugins.md）。
 // Shuttle 不认识任何业务表，只按这些文件建表、放行数据接口和本机函数的 ctx.db。
 // 复制项目只会带走站点代码、不带表，所以每次启动（和文件变了时）检查一遍，缺哪张建哪张。
 // agent 给后台加模块时加一个文件，不改 Shuttle。
@@ -120,15 +122,20 @@ func parseTables(root string) ([]tableDef, error) {
 		return nil, nil
 	}
 	defs := make([]tableDef, 0, len(files))
+	from := map[string]string{} // 表名 → 声明它的文件：项目自己的表和插件的表重名时报出来
 	for _, f := range files {
 		var d tableDef
 		if err := json.Unmarshal(f.Data, &d); err != nil {
 			return nil, i18n.Errorf("%s 格式不对：%w", "%s is malformed: %w", f.Rel, err)
 		}
-		d.Key = f.Key
+		d.Key = plugin.TableKey(f.Plugin, f.Key) // 插件的表带插件 id 前缀：plugins/social/tables/posts.json → social_posts
 		if !tableKeyRe.MatchString(d.Key) || len(d.JSONSchema) == 0 {
 			return nil, i18n.Errorf("%s：文件名（表的 key）要是小写字母、数字、下划线，内容要有 json_schema", "%s: the file name (table key) must be lowercase letters, digits and underscores, and it needs a json_schema", f.Rel)
 		}
+		if prev, dup := from[d.Key]; dup {
+			return nil, i18n.Errorf("%s 和 %s 都是表 %s：插件的表名带插件 id 前缀，项目自己的表不要用这个前缀，改一个名字", "%s and %s both declare table %s: plugin tables are prefixed with the plugin id, so rename the project's own table", prev, f.Rel, d.Key)
+		}
+		from[d.Key] = f.Rel
 		defs = append(defs, d)
 	}
 	return defs, nil

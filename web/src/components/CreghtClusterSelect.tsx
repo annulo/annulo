@@ -8,7 +8,7 @@ type Cluster = { host: string; name: string; logged_in: boolean; templates: numb
 type State = { current: string; clusters: Cluster[] }
 
 /**
- * 选 creght 集群（creght.cn / creght.com / talizen.com）。几个集群的账号、项目、模板各是各的：
+ * 选 creght 集群（creght.cn / creght.com）。几个集群的账号、项目、模板各是各的：
  * 换了之后正在用的项目不在新集群就会放下，onChanged 里让界面回到登录 / 选项目。
  */
 export default function CreghtClusterSelect({ onChanged, className }: { onChanged: () => void; className?: string }) {

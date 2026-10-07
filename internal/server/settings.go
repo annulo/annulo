@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -71,11 +72,12 @@ type modelView struct {
 	Ready     bool            `json:"ready"`
 	Error     string          `json:"error"`
 	Agent     bool            `json:"agent,omitempty"` // 本机的外部 agent
+	agent.ThinkingInfo                // 这个模型支持的思考档位、来源（custom / catalog / default / agent）、用户自己配的
 }
 
 func (s *Server) viewModel(m config.LLM) modelView {
 	v := modelView{ID: m.ID, Name: m.Name, Label: m.Label(), Provider: m.Provider, Builtin: strings.HasPrefix(m.ID, config.CreghtProvider+":"),
-		Model: m.Model, Window: m.ContextWindow, Images: m.Vision(), Reasoning: m.Reasoning, Pricing: m.Pricing, Agent: agent.IsCLIProvider(m.Provider)}
+		Model: m.Model, Window: m.ContextWindow, Images: m.Vision(), Reasoning: m.Reasoning, Pricing: m.Pricing, Agent: agent.IsCLIProvider(m.Provider), ThinkingInfo: agent.ModelThinking(m)}
 	_, err := s.agent.Resolve(m)
 	v.Ready, v.Error = err == nil, errString(err)
 	return v
@@ -121,7 +123,11 @@ func (s *Server) apiLLMGet(w http.ResponseWriter, r *http.Request) {
 		models = append(models, v)
 	}
 	autoTitle, titleModel := s.agent.TitleSettings()
+	// thinking 是用户选的档；thinking_effective 是当前模型实际用的档（没有选的那档时取最接近的）；
+	// thinking_levels 是全部档，每个模型自己支持哪些在 models[].thinking_levels
+	cur, _ := s.agent.LLM()
 	writeJSON(w, map[string]any{"providers": providers, "models": models, "agents": agents, "active": st.Active, "thinking": st.Thinking, "thinking_levels": config.ThinkingLevels,
+		"thinking_effective": agent.EffectiveThinking(cur, st.Thinking),
 		"auto_title": autoTitle, "title_model": titleModel})
 }
 
@@ -174,6 +180,10 @@ type modelInput struct {
 	Window    int    `json:"context_window"`
 	Images    bool   `json:"images"`
 	Reasoning bool   `json:"reasoning"`
+	// ThinkingLevels：自己配的思考档位（档 → 发的值），不传或空 = 按模型资料 / 通用
+	ThinkingLevels map[string]string `json:"thinking_levels"`
+	// Auto：新加的模型按 pi 的模型资料预填上下文窗口、看图、思考（查不到就用传来的）
+	Auto bool `json:"auto"`
 }
 
 func (in modelInput) llm() (config.LLM, error) {
@@ -182,6 +192,15 @@ func (in modelInput) llm() (config.LLM, error) {
 		Model: strings.TrimSpace(in.Model), ContextWindow: max(in.Window, 0), Images: &images, Reasoning: in.Reasoning}
 	if m.Model == "" {
 		return m, i18n.New("填一下模型 id", "Enter a model id")
+	}
+	if len(in.ThinkingLevels) > 0 {
+		m.ThinkingLevels = map[string]string{}
+		for k, v := range in.ThinkingLevels {
+			if !slices.Contains(config.ThinkingLevels, k) {
+				return m, i18n.Errorf("不认识的思考档位：%s", "Unknown thinking level: %s", k)
+			}
+			m.ThinkingLevels[k] = strings.TrimSpace(v)
+		}
 	}
 	return m, nil
 }
@@ -202,6 +221,11 @@ func (s *Server) apiLLMSaveModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := in.llm()
+	if err == nil && in.Auto && m.ID == "" {
+		if win, img, reasoning, ok := agent.CatalogDefaults(m); ok {
+			m.ContextWindow, m.Images, m.Reasoning = win, &img, reasoning
+		}
+	}
 	if err == nil {
 		m, err = s.agent.SaveModel(m)
 	}
@@ -324,4 +348,116 @@ func (s *Server) apiLLMTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "reply": text, "ms": time.Since(start).Milliseconds()})
+}
+
+// apiLLMModelDefaults：POST settings/llm/model-defaults {api, models: [id…]}，加模型前给每个模型的默认参数：
+// 按 pi 的模型资料（查不到用通用的）给上下文窗口、看图、思考、支持的思考档位，页面上能先看、先改再保存
+func (s *Server) apiLLMModelDefaults(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Api    string   `json:"api"`
+		Models []string `json:"models"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	type defaults struct {
+		Window    int  `json:"context_window"`
+		Images    bool `json:"images"`
+		Reasoning bool `json:"reasoning"`
+		Catalog   bool `json:"catalog"` // 资料里查到了
+		agent.ThinkingInfo
+	}
+	out := map[string]defaults{}
+	for _, id := range in.Models {
+		l := config.LLM{Model: id, Api: in.Api, Reasoning: true}
+		d := defaults{Images: true, Reasoning: true}
+		if win, img, reasoning, ok := agent.CatalogDefaults(l); ok {
+			d.Window, d.Images, d.Reasoning, d.Catalog = win, img, reasoning, true
+		}
+		l.Reasoning = d.Reasoning
+		d.ThinkingInfo = agent.ModelThinking(l)
+		out[id] = d
+	}
+	writeJSON(w, map[string]any{"models": out})
+}
+
+// apiLLMProviderModels：POST settings/llm/provider-models {provider: {...}}，用表单里的地址和 key（编辑时 key 留空用存着的）
+// 去服务商那里拉模型列表：OpenAI 兼容 / Responses 是 GET <base>/models，Anthropic 是 GET <base>/v1/models。
+// 拉到了也说明地址和 key 能用；拉不到（有的代理不支持）页面退回手填模型 id。走服务端：浏览器直接请求会被跨域拦，key 也不该在页面里发出去。
+func (s *Server) apiLLMProviderModels(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Provider providerInput `json:"provider"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := s.provider(in.Provider)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	ids, err := providerModels(ctx, p)
+	var un unsupportedErr
+	switch {
+	case errors.As(err, &un):
+		// 服务商不给列模型（很多代理没有这个接口）：不算错，页面让用户手填模型 id
+		writeJSON(w, map[string]any{"models": []string{}, "unsupported": un.Error()})
+	case err != nil:
+		fail(w, http.StatusBadGateway, err)
+	default:
+		writeJSON(w, map[string]any{"models": ids})
+	}
+}
+
+// unsupportedErr：没拉到模型列表，但不一定是配置错了——很多网关没有列模型的接口，还会回 401 / 403 / 404，
+// 分不清是 key 不对还是不支持，所以都算这种：页面让用户手填模型 id，保存前用真实对话测一次。只有连不上地址才直接报错
+type unsupportedErr struct{ error }
+
+func providerModels(ctx context.Context, p config.Provider) ([]string, error) {
+	url := p.BaseURL + "/models"
+	if p.Api == "anthropic-messages" {
+		url = p.BaseURL + "/v1/models?limit=1000"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, i18n.Errorf("Base URL 不对：%v", "Invalid Base URL: %v", err)
+	}
+	if p.Api == "anthropic-messages" {
+		req.Header.Set("x-api-key", p.Key())
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("authorization", "Bearer "+p.Key())
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, i18n.Errorf("连不上 %s：%v", "Can't reach %s: %v", p.BaseURL, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return nil, unsupportedErr{i18n.Errorf("服务商拒绝了读模型列表（HTTP %d）：可能是 key 不对，也可能它不开放这个接口", "The provider refused to list models (HTTP %d): the key may be wrong, or it doesn't offer this endpoint", resp.StatusCode)}
+	case resp.StatusCode != http.StatusOK:
+		return nil, unsupportedErr{i18n.Errorf("这个服务商不提供模型列表（HTTP %d）", "This provider doesn't list its models (HTTP %d)", resp.StatusCode)}
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, unsupportedErr{i18n.New("服务商返回的不是模型列表", "The provider didn't return a model list")}
+	}
+	ids := []string{}
+	for _, d := range out.Data {
+		if d.ID != "" && !slices.Contains(ids, d.ID) {
+			ids = append(ids, d.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
 }

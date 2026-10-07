@@ -35,9 +35,7 @@ document.getElementById('f').onchange = e => { document.getElementById('files').
 </script></body>`
 
 func TestBrowser(t *testing.T) {
-	if browser.FindChrome() == "" {
-		t.Skip("本机没有 Chrome / Edge")
-	}
+	needChrome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/publish":
@@ -141,9 +139,7 @@ func TestBalanceParens(t *testing.T) {
 }
 
 func TestBrowserSnapshot(t *testing.T) {
-	if browser.FindChrome() == "" {
-		t.Skip("本机没有 Chrome / Edge")
-	}
+	needChrome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<!doctype html><title>demo</title><body><button aria-label="Post" data-view-name="share-post">发布</button></body>`))
 	}))
@@ -183,9 +179,7 @@ export async function run(input: { url: string }, ctx: any) {
 }
 
 func TestBrowserUploadLocalFile(t *testing.T) {
-	if browser.FindChrome() == "" {
-		t.Skip("本机没有 Chrome / Edge")
-	}
+	needChrome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(uploadPage)) }))
 	defer srv.Close()
 	dir := t.TempDir()
@@ -239,9 +233,7 @@ type retainedLease struct {
 func (p *retainedLease) Close() error { p.release(); return nil }
 
 func TestVisibleBrowserKeptOpen(t *testing.T) {
-	if browser.FindChrome() == "" {
-		t.Skip("No Chrome")
-	}
+	needChrome(t)
 	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		t.Skip("没有显示器，开不了可见窗口")
 	}
@@ -304,4 +296,15 @@ export async function stale(input:any,ctx:any){const b=await ctx.browser.open({p
 		t.Fatalf("closing user window should release profile: %v", err)
 	}
 	p.Close()
+}
+
+// needChrome：真的开一个 Chrome（headless 在 macOS 上也会闪一下屏幕），默认跳过；
+// 改了浏览器相关的代码时用 ANNULO_TEST_BROWSER=1 go test ./internal/localfn/ 跑
+func needChrome(t *testing.T) {
+	if os.Getenv("ANNULO_TEST_BROWSER") == "" {
+		t.Skip("要开真的 Chrome，默认跳过：ANNULO_TEST_BROWSER=1 才跑")
+	}
+	if browser.FindChrome() == "" {
+		t.Skip("本机没有 Chrome / Edge")
+	}
 }

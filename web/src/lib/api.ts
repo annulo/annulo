@@ -14,7 +14,7 @@ export type Status = {
   offline_mode?: boolean
   /** offline：离线项目（数据只在本机，没有 creght 站点） */
   backend?: { project_id: string; site_id: string; dir: string; preview_url: string; editor_url: string; offline?: boolean; name?: string }
-  llm: { ready: boolean; model: string; error: string; reasoning: boolean; thinking: Thinking; provider: string }
+  llm: { ready: boolean; model: string; error: string; reasoning: boolean; thinking: Thinking; thinking_levels?: Thinking[]; provider: string }
   /** 设置里的界面语言（auto 跟随系统）和生效的语言；外壳、左侧后台、助手都按 locale */
   language?: 'auto' | 'zh' | 'en'
   locale?: 'zh' | 'en'
@@ -115,18 +115,27 @@ export type ModelConfig = {
   ready: boolean
   error: string
   agent?: boolean // 本机的外部 agent：用它自己的登录和模型
+  /** 这个模型支持的思考档位（从低到高）；来源：custom 自己配的 / catalog 模型资料 / default 通用 / agent 本机 agent */
+  thinking_levels?: Thinking[]
+  thinking_source?: 'custom' | 'catalog' | 'default' | 'agent'
+  /** 自己配的档位：档 → 发给接口的值（空 = 发档名） */
+  thinking_custom?: Partial<Record<Thinking, string>>
 }
 
 /** 本机能当助手的外部 agent：装了的有 path */
 export type LocalAgent = { id: string; model_id: string; name: string; path?: string; install: string; models?: { model_id: string; name: string }[] }
 
-export type Thinking = 'off' | 'low' | 'medium' | 'high'
+/** 思考档位，从低到高；每个模型只支持其中一部分（ModelConfig.thinking_levels） */
+export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export type ModelSettings = {
   providers: ProviderConfig[]
   models: ModelConfig[]
   active: string
+  /** 用户选的档 */
   thinking: Thinking
+  /** 当前模型实际用的档：它没有选的那档时是最接近的 */
+  thinking_effective?: Thinking
   thinking_levels: Thinking[]
   /** 新对话自动起名；title_model 是起名用的模型，空 = 跟对话用同一个 */
   auto_title: boolean
@@ -147,7 +156,7 @@ export function priceText(p?: { input: number; cached_input: number; output: num
   return short ? t('输入 {i} · 缓存 {c} · 输出 {o}', v) : t('输入 {i} · 缓存 {c} · 输出 {o} 积分/百万 token', v)
 }
 
-export const THINKING_LABEL: Record<Thinking, string> = { off: '关', low: '低', medium: '中', high: '高' }
+export const THINKING_LABEL: Record<Thinking, string> = { off: '关', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高' }
 
 export type MCPServerStatus = {
   name: string

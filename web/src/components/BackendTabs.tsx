@@ -145,7 +145,7 @@ export function TabStrip({
         className="tab-scroll flex h-full min-w-0 [transform:rotateX(180deg)] items-start px-2 overflow-x-auto overflow-y-hidden"
       >
         {tabs.map((tab, i) => {
-          const title = titles[tab.id] || t('运营后台')
+          const title = titles[tab.id] || t('后台') // 页面没设标题（助手常忘了设）时显示「后台」，不留空白标签；页面标题怎么设见内置 annulo skill 的 pages.md
           const on = tab.id === active
           // 两个没选中的标签之间画一道竖线；挨着当前标签的不画
           const divider = !on && tabs[i + 1] && tabs[i + 1].id !== active
@@ -155,7 +155,7 @@ export function TabStrip({
               data-tab={tab.id}
               role="tab"
               aria-selected={on}
-              title={title}
+              title={title || undefined}
               onMouseDown={(e) => {
                 // 中键关掉标签，和浏览器一样
                 if (e.button === 1 && tabs.length > 1) {

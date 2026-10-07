@@ -2,11 +2,11 @@ package localfn
 
 // 本机函数也在云端跑（docs/mobile-remote.md 原语一）：手机上打开运营后台时没有 Shuttle，
 // 只读表、算统计的函数在文件里声明 export const cloud = ['list', 'stats']，
-// shuttle push 前把它们打包成站点 Func backend/func/local/<文件>.ts，页面不在 Shuttle 里时调 invoke('local/<文件>.<函数>')。
+// annulo push 前把它们打包成站点 Func backend/func/local/<文件>.ts，页面不在 Shuttle 里时调 invoke('local/<文件>.<函数>')。
 //
 // 云端那份只给 ctx.db、ctx.mcp('creght', …)（站点 Func 的，只读、只给所有者）、ctx.member、ctx.locale；
 // progress / log / sleep 什么都不做；ctx.workspace 是 undefined（ctx.workspace?.x ?? 默认值 的写法照常）；
-// secrets、browser、llm 这些本机能力一碰就抛错，写清楚要回电脑上跑。
+// secrets、browser、llm、exec 这些本机能力一碰就抛错，写清楚要回电脑上跑。
 // 调用者必须是项目成员（ctx.member.require()）：表里是用户自己的业务数据。
 //
 // 生成的文件不进项目的 git（.git/info/exclude，见 wsgit），只随 push 发到 creght。
@@ -22,6 +22,7 @@ import (
 
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 	"github.com/dop251/goja"
 	"github.com/evanw/esbuild/pkg/api"
 )
@@ -34,7 +35,7 @@ var cloudMark = brand.CloudMarkers[0]
 
 // cloudCtx 是云端那份 ctx：站点 Func 的 ctx 只挑这几样给出去。
 const cloudCtx = `
-const __forbid = ['secrets', 'fetchAll', 'html', 'oauth', 'browser', 'llm']
+const __forbid = ['secrets', 'fetchAll', 'html', 'oauth', 'browser', 'llm', 'exec', 'agent']
 const __sys = ['id', 'sort', 'created_at', 'updated_at', 'table_id', 'user_id']
 // 站点 Func 的宿主能力出错时抛的是字符串，本机函数都按 Error 读 e.message：换成 Error
 const __err = (e) => (e instanceof Error ? e : new Error(String(e)))
@@ -80,10 +81,11 @@ function __cloudCtx(ctx, locale, fn) {
     db,
     member: ctx.member,
     locale: en ? 'en' : 'zh',
-    mcp: __wrap((server, tool, args) => {
+    chat_id: '', // 云端没有对话
+    mcp: Object.assign(__wrap((server, tool, args) => {
       if (server !== 'creght') throw new Error(en ? 'In the cloud ctx.mcp only reaches creght (read-only); "' + server + '" is only on the computer running Annulo' : '云端的 ctx.mcp 只有 creght（只读），「' + server + '」只在电脑上的 Annulo 里有')
       return ctx.mcp(server, tool, args)
-    }),
+    }), { servers: () => [{ name: 'creght', status: 'connected' }] }),
     progress() {},
     log() {},
     async sleep() {},
@@ -169,9 +171,12 @@ func IsRemote(workDir, name string) (bool, error) {
 }
 
 // BuildCloud 把一个文件里声明在 cloud 的函数打包成一份站点 Func 的源码。
+// 插件的文件（social/x）生成 backend/func/local/social__x.ts，页面调 local/social__x.<函数>（plugin.ChatKey）。
 func BuildCloud(workDir, file string, names []string) (string, error) {
+	id, base, _ := plugin.Split(file)
+	rel := plugin.Rel(id, Dir) + "/" + base
 	var b strings.Builder
-	fmt.Fprintf(&b, "import * as m from './%s/%s'\n%s", Dir, file, cloudCtx)
+	fmt.Fprintf(&b, "import * as m from './%s'\n%s", rel, cloudCtx)
 	for _, n := range names {
 		fn, _ := json.Marshal(file + "." + n)
 		// 页面传 { input, locale }（lib/shuttle.ts 的 runLocal），这里拆开再交给本机函数，和本机的 (input, ctx) 一样
@@ -191,12 +196,15 @@ func BuildCloud(workDir, file string, names []string) (string, error) {
 		Sourcemap:     api.SourceMapNone,
 	})
 	if len(res.Errors) > 0 {
-		return "", i18n.Errorf("打包 %s/%s.ts 到云端失败：%s", "Bundling %s/%s.ts for the cloud failed: %s", Dir, file, res.Errors[0].Text)
+		if err := missingPlugin(res.Errors); err != nil {
+			return "", err
+		}
+		return "", i18n.Errorf("打包 %s.ts 到云端失败：%s", "Bundling %s.ts for the cloud failed: %s", rel, res.Errors[0].Text)
 	}
 	if len(res.OutputFiles) == 0 {
 		return "", i18n.New("打包没有产物", "Bundling produced no output")
 	}
-	head := fmt.Sprintf("%s%s/%s.ts\n// 由 shuttle push 从 %s/%s.ts 生成（cloud 里列的函数），不要改这里：改 %s/%s.ts。\n\n", cloudMark, Dir, file, Dir, file, Dir, file)
+	head := fmt.Sprintf("%s%s.ts\n// 由 annulo push 从 %s.ts 生成（cloud 里列的函数），不要改这里：改 %s.ts。\n\n", cloudMark, rel, rel, rel)
 	return head + string(res.OutputFiles[0].Contents), nil
 }
 
@@ -210,42 +218,32 @@ func manifestSource(m map[string][]string) string {
 		sort.Strings(m[k])
 	}
 	b, _ := json.Marshal(m)
-	return fmt.Sprintf("%s%s\n// 由 shuttle push 生成：local/*.ts 里 cloud、remote 声明的函数，页面不在 Annulo 里时按它判断能不能调。不要改这里。\n\nexport function get(_input, ctx) {\n  ctx.member.require()\n  return %s\n}\n", cloudMark, "manifest", string(b))
+	return fmt.Sprintf("%s%s\n// 由 annulo push 生成：local/*.ts 里 cloud、remote 声明的函数，页面不在 Annulo 里时按它判断能不能调。不要改这里。\n\nexport function get(_input, ctx) {\n  ctx.member.require()\n  return %s\n}\n", cloudMark, "manifest", string(b))
 }
 
 // RemoteFns 列出一个项目里声明了 remote 的函数（文件.函数），中转连平台时报上去（internal/relay 的 hello）。
 // 读声明要编译文件，按文件的修改时间缓存：没改过的不重读；读不了的文件跳过（push、试跑时会报出来）。
 func RemoteFns(workDir string) ([]string, error) {
-	ents, err := os.ReadDir(filepath.Join(workDir, Dir))
+	files, err := fnFiles(workDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	var out []string
-	for _, e := range ents {
-		name := e.Name()
-		ext := filepath.Ext(name)
-		base := strings.TrimSuffix(name, ext)
-		if e.IsDir() || (ext != ".ts" && ext != ".js") || !fileRe.MatchString(base) || strings.HasSuffix(base, ".d") {
-			continue
-		}
-		path := filepath.Join(workDir, Dir, name)
-		info, err := e.Info()
+	for _, f := range files {
+		info, err := f.Entry.Info()
 		if err != nil {
 			continue
 		}
-		key := fmt.Sprintf("%s|%d|%d", path, info.ModTime().UnixNano(), info.Size())
+		key := fmt.Sprintf("%s|%d|%d", f.Path, info.ModTime().UnixNano(), info.Size())
 		var remote []string
 		if v, ok := remoteCache.Load(key); ok {
 			remote = v.([]string)
 		} else {
-			_, remote, _ = Declared(path)
+			_, remote, _ = Declared(f.Path)
 			remoteCache.Store(key, remote)
 		}
 		for _, n := range remote {
-			out = append(out, base+"."+n)
+			out = append(out, f.Name+"."+n)
 		}
 	}
 	sort.Strings(out)
@@ -256,37 +254,31 @@ var remoteCache sync.Map // 路径|修改时间|大小 → 这个文件声明的
 
 // WriteCloud 按 local/*.ts 的 cloud 声明重新生成 backend/func/local/，删掉不再需要的生成文件。返回写了哪些文件（相对项目根目录）。
 func WriteCloud(workDir string) ([]string, error) {
-	ents, err := os.ReadDir(filepath.Join(workDir, Dir))
-	if err != nil && !os.IsNotExist(err) {
+	files, err := fnFiles(workDir)
+	if err != nil {
 		return nil, err
 	}
 	want := map[string]string{}
 	manifest := map[string][]string{"cloud": {}, "remote": {}}
-	for _, e := range ents {
-		name := e.Name()
-		ext := filepath.Ext(name)
-		base := strings.TrimSuffix(name, ext)
-		if e.IsDir() || (ext != ".ts" && ext != ".js") || !fileRe.MatchString(base) || strings.HasSuffix(base, ".d") {
-			continue
-		}
-		names, remote, err := Declared(filepath.Join(workDir, Dir, name))
+	for _, f := range files {
+		names, remote, err := Declared(f.Path)
 		if err != nil {
 			return nil, err
 		}
 		for _, n := range remote {
-			manifest["remote"] = append(manifest["remote"], base+"."+n)
+			manifest["remote"] = append(manifest["remote"], f.Name+"."+n)
 		}
 		// remote 的不用生成：页面调模板自带的 backend/func/shuttle.ts 的 call，转给电脑后由 Shuttle 按声明把关
 		if len(names) == 0 {
 			continue
 		}
-		src, err := BuildCloud(workDir, base, names)
+		src, err := BuildCloud(workDir, f.Name, names)
 		if err != nil {
 			return nil, err
 		}
-		want[base+".ts"] = src
+		want[plugin.ChatKey(f.Name)+".ts"] = src
 		for _, n := range names {
-			manifest["cloud"] = append(manifest["cloud"], base+"."+n)
+			manifest["cloud"] = append(manifest["cloud"], f.Name+"."+n)
 		}
 	}
 	if len(manifest["cloud"]) > 0 || len(manifest["remote"]) > 0 {

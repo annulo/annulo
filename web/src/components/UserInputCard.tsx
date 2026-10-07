@@ -30,7 +30,8 @@ const STOPPED = ['用户没有回答就停止了', 'Stopped before the user answ
  * 提交的答案作为一条新消息发给助手，它接着往下做；用户也可以不填卡片、直接在输入框回复。
  * 旧对话里被停掉的问卷（停止、退出 App、服务重启）同样可以这样接着答。
  */
-export default function UserInputCard({ part, onAnswer }: { part: DynamicToolUIPart; onAnswer?: (text: string) => void }) {
+// reply：问卷后面紧跟着的用户消息（没填问卷、直接在对话里回复的），用来给选中的选项打勾
+export default function UserInputCard({ part, onAnswer, reply }: { part: DynamicToolUIPart; onAnswer?: (text: string) => void; reply?: string }) {
   const req = (part.input ?? {}) as Request
   // option 的 value 模型常漏写，缺了就用 label（服务端校验也是这么补的）
   const questions = (req.questions ?? []).map((q) => ({ ...q, options: q.options?.map((o) => ({ ...o, value: o.value || o.label })) }))
@@ -81,6 +82,12 @@ export default function UserInputCard({ part, onAnswer }: { part: DynamicToolUIP
   // 还在等回答（或者被停掉了）但已经不是最后一条：用户在后面的对话里回复过了
   const done = !open || sent
   const labelOf = (q: Question, v: string) => q.options?.find((o) => o.value === v)?.label ?? v
+  // 在对话里直接回复的：回复正好是某个选项的文字（单选题）就当选了它，打勾用
+  const chatPick = (q: Question) => {
+    const text = (result?.reply ?? (waiting ? reply : undefined))?.trim()
+    if (!text || q.type !== 'single_select') return undefined
+    return q.options?.find((o) => o.label === text || o.value === text)?.value
+  }
 
   return (
     <div className="mx-2 rounded-xl border border-border bg-muted/40 p-3 text-sm">
@@ -93,25 +100,57 @@ export default function UserInputCard({ part, onAnswer }: { part: DynamicToolUIP
       </div>
 
       {done ? (
-        <div className="mt-3 space-y-2 border-t border-border pt-3 text-xs">
-          {part.state === 'output-error' && !sent ? (
-            <p className="text-muted-foreground">{t('没有回答就停止了。')}</p>
-          ) : waiting && !sent ? (
-            <p className="text-muted-foreground">{t('已在下面的对话里回复。')}</p>
-          ) : part.state !== 'output-available' && !sent ? (
+        <div className="mt-3 space-y-3 border-t border-border pt-3 text-xs">
+          {part.state !== 'output-available' && part.state !== 'output-error' && !sent ? (
             <p className="text-muted-foreground">{t('正在显示问卷…')}</p>
-          ) : result?.status === 'continued_in_chat' ? (
-            <p className="text-muted-foreground">{t('你在对话里回复了：')}{result.reply}</p>
           ) : (
-            questions.map((q) => {
-              const v = result?.answers?.[q.id] ?? (sent ? valueOf(q) : undefined)
-              return (
-                <div key={q.id}>
-                  <div className="text-muted-foreground">{q.label}</div>
-                  <div className="mt-0.5 font-medium">{v === undefined ? t('（未回答）') : Array.isArray(v) ? v.map((x) => labelOf(q, x)).join(t('、')) : labelOf(q, v)}</div>
-                </div>
-              )
-            })
+            <>
+              {/* 回答过的也列出当时的问题和选项（只读），知道答案的打勾：翻历史时能看出当时在选什么 */}
+              {questions.map((q) => {
+                const v = result?.answers?.[q.id] ?? (sent ? valueOf(q) : undefined) ?? chatPick(q)
+                const picked = v === undefined ? [] : Array.isArray(v) ? v : [v]
+                const choice = q.type === 'single_select' || q.type === 'multi_select'
+                return (
+                  <div key={q.id} className="space-y-1.5">
+                    <div className="text-muted-foreground">{q.label}</div>
+                    {choice ? (
+                      <div className="space-y-1">
+                        {(q.options ?? []).map((o) => {
+                          const on = picked.includes(o.value)
+                          return (
+                            <div key={o.value} className={cn('flex items-start gap-2 rounded-md px-2 py-1', on ? 'bg-primary/10 font-medium text-foreground' : 'text-muted-foreground')}>
+                              <Check className={cn('mt-0.5 size-3 shrink-0', on ? 'text-primary-text' : 'invisible')} />
+                              <span className="min-w-0">
+                                {o.label}
+                                {o.description && <span className="block font-normal opacity-80">{o.description}</span>}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {picked.filter((x) => !q.options?.some((o) => o.value === x)).map((x) => (
+                          <div key={x} className="flex items-start gap-2 rounded-md bg-primary/10 px-2 py-1 font-medium">
+                            <Check className="mt-0.5 size-3 shrink-0 text-primary-text" />
+                            <span className="min-w-0">{x}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="font-medium">{picked.length ? picked.join(t('、')) : t('（未回答）')}</div>
+                    )}
+                  </div>
+                )
+              })}
+              {part.state === 'output-error' && !sent ? (
+                <p className="text-muted-foreground">{t('没有回答就停止了。')}</p>
+              ) : waiting && !sent ? (
+                <p className="text-muted-foreground">{t('已在下面的对话里回复。')}</p>
+              ) : result?.status === 'continued_in_chat' ? (
+                <p className="text-muted-foreground">
+                  {t('你在对话里回复了：')}
+                  {result.reply}
+                </p>
+              ) : null}
+            </>
           )}
         </div>
       ) : (

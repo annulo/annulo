@@ -385,6 +385,47 @@ func TestFileExt(t *testing.T) {
 	}
 }
 
+// ctx.mcp.servers()：列出 MCP 的名字和状态，ctx.mcp 照样能调
+func TestMCPServers(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "m.ts", `
+export async function run(_: unknown, ctx: any) {
+  const list = ctx.mcp.servers()
+  return { list, creght: list.some((s: any) => s.name === 'creght'), r: await ctx.mcp('a', 't', {}) }
+}`)
+	h := host(dir, &memDB{rows: map[string][]map[string]any{}})
+	h.MCP = func(_ context.Context, server, tool string, _ map[string]any) (any, error) {
+		return server + "/" + tool, nil
+	}
+	h.MCPServers = func() []MCPServer {
+		return []MCPServer{{Name: "a", Status: "connected"}, {Name: "b", Status: "needs_auth"}}
+	}
+	res, err := Run(context.Background(), h, "m.run", nil, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	if string(b) != `{"creght":false,"list":[{"name":"a","status":"connected"},{"name":"b","status":"needs_auth"}],"r":"a/t"}` {
+		t.Fatalf("res = %s", b)
+	}
+}
+
+// ctx.agent.current()：助手当前的模型和能不能跑
+func TestAgentCurrent(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.ts", `export function run(_: unknown, ctx: any) { return ctx.agent.current() }`)
+	h := host(dir, &memDB{rows: map[string][]map[string]any{}})
+	h.AgentCurrent = func() AgentModel { return AgentModel{Error: "还没有能用的模型"} }
+	res, err := Run(context.Background(), h, "a.run", nil, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	if string(b) != `{"error":"还没有能用的模型","id":"","model":"","name":"","provider":"","ready":false}` {
+		t.Fatalf("res = %s", b)
+	}
+}
+
 // ctx.oauth：不给账号用默认的，{ account } 指定账号；ctx.oauth.accounts 列出连着的账号
 func TestOAuthAccounts(t *testing.T) {
 	dir := t.TempDir()
@@ -405,5 +446,25 @@ export async function run(_: unknown, ctx: any) {
 	b, _ := json.Marshal(res)
 	if string(b) != `{"b":"google:b@x.com","def":"google:","list":["a@x.com","b@x.com"]}` {
 		t.Fatalf("res = %s", b)
+	}
+}
+
+// ctx.chat_id：助手在对话里跑的函数能拿到对话 id，页面按钮、定时任务是空字符串
+func TestChatID(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "c.ts", `export function run(_: unknown, ctx: any) { return { id: ctx.chat_id, type: typeof ctx.chat_id } }`)
+	h := host(dir, &memDB{rows: map[string][]map[string]any{}})
+	h.ChatID = "task-weekly-report-1"
+	res, err := Run(context.Background(), h, "c.run", nil, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(res); string(b) != `{"id":"task-weekly-report-1","type":"string"}` {
+		t.Fatalf("res = %s", b)
+	}
+	h.ChatID = ""
+	res, _ = Run(context.Background(), h, "c.run", nil, func(Event) {})
+	if b, _ := json.Marshal(res); string(b) != `{"id":"","type":"string"}` {
+		t.Fatalf("没有对话时应是空字符串：%s", b)
 	}
 }

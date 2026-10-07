@@ -41,7 +41,7 @@ func rootCmd() *cobra.Command {
 	root.Flags().BoolVar(&noOpen, "no-open", false, "启动后不自动打开浏览器")
 	root.Flags().BoolVar(&appFlag, "app", false, "由 Mac App 启动（见 appmode.go）")
 	root.Flags().MarkHidden("app")
-	root.AddCommand(runCmd(), pushCmd(), logsCmd())
+	root.AddCommand(runCmd(), uploadCmd(), templateCmd(), pushCmd(), logsCmd(), mcpCmd())
 	return root
 }
 

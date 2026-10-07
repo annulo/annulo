@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/PuerkitoBio/goquery"
@@ -80,6 +81,22 @@ type Cond struct {
 }
 
 // FetchRequest / FetchResponse 是函数里 fetch 的一次请求。出网规则（不许访问内网）由 Host 决定。
+// MCPServer 是 ctx.mcp.servers() 的一项。Status：connected / needs_auth / connecting / failed / disabled
+type MCPServer struct {
+	Name   string
+	Status string
+}
+
+// AgentModel 是 ctx.agent.current() 的结果
+type AgentModel struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Ready    bool   `json:"ready"`
+	Error    string `json:"error"`
+}
+
 type FetchRequest struct {
 	URL     string
 	Method  string
@@ -109,6 +126,7 @@ type Host struct {
 	RunID     string                                                            // 可由页面运行管理器指定，否则自动生成
 	WorkDir   string                                                            // 运营后台的本地副本，函数在 WorkDir/local 下
 	Workspace map[string]any                                                    // ctx.workspace：project_id / site_id / api_host / shuttle_projects / machine
+	ChatID    string                                                            // ctx.chat_id：助手在哪段对话里跑的这个函数（annulo run 带来的）；页面按钮、定时任务是空
 	DB        DB                                                                // ctx.db
 	Secret    func(name string) (string, bool)                                  // ctx.secrets.get
 	Fetch     func(ctx context.Context, r FetchRequest) (*FetchResponse, error) // fetch / ctx.fetch
@@ -123,6 +141,12 @@ type Host struct {
 	// MCP 是 ctx.mcp(server, tool, args)：调用户在 Shuttle 里连上的 MCP 工具（和 agent 同一个连接、同一套开关）。
 	// 集成（creght、WordPress…）的数据读写走它，Shuttle 不给具体平台写死接口。
 	MCP func(ctx context.Context, server, tool string, args map[string]any) (any, error)
+	// MCPServers 是 ctx.mcp.servers()：用户加了哪些 MCP、各自的状态（connected / needs_auth / connecting / failed / disabled），
+	// 页面据此决定显不显示某个集成（比如没连 creght 就没有 creght 这一项），不用靠调用报错来猜
+	MCPServers func() []MCPServer
+	// AgentCurrent 是 ctx.agent.current()：助手当前用的模型，以及它能不能跑（ready=false 时 error 说明原因、去哪配）。
+	// 页面据此决定「交给助手」的按钮能不能用；外部 agent（Claude Code / Codex）也算
+	AgentCurrent func() AgentModel
 	// OAuth 是 ctx.oauth(provider, { account })：用户在 设置 → 连接 里授权过的账号（google…）的 access token，过期自动刷新。
 	// 一种连接可以连多个账号，account 空是最早连的那个；OAuthAccounts 是 ctx.oauth.accounts(provider)，连上的账号名。
 	// 调哪个接口、怎么读数据写在本机函数里，Shuttle 只管授权和 token。
@@ -150,18 +174,50 @@ type Fn struct {
 
 var fileRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// source 找函数所在的文件：local/<file>.ts（也认 .js）。
+// source 找函数所在的文件：local/<file>.ts（也认 .js）；插件的 <插件>/<file> 在 plugins/<插件>/local/ 下（docs/plugins.md）。
 func source(workDir, file string) (string, error) {
-	if !fileRe.MatchString(file) {
-		return "", i18n.Errorf("函数名不对：%q（格式是 文件名.函数名，比如 geo.check）", "Invalid function name: %q (the format is file.function, e.g. geo.check)", file)
+	id, base, ok := plugin.Split(file)
+	if !ok || !fileRe.MatchString(base) {
+		return "", i18n.Errorf("函数名不对：%q（格式是 文件名.函数名，比如 geo.check；插件的是 插件/文件名.函数名，比如 social/x.publish）", "Invalid function name: %q (the format is file.function, e.g. geo.check; for a plugin, plugin/file.function, e.g. social/x.publish)", file)
 	}
 	for _, ext := range []string{".ts", ".js"} {
-		p := filepath.Join(workDir, Dir, file+ext)
+		p := filepath.Join(plugin.Root(workDir, id), Dir, base+ext)
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
 	}
-	return "", i18n.Errorf("没有 %s/%s.ts", "%s/%s.ts doesn't exist", Dir, file)
+	return "", i18n.Errorf("没有 %s/%s.ts", "%s/%s.ts doesn't exist", plugin.Rel(id, Dir), base)
+}
+
+// fnFile 是一个本机函数文件：Name 是函数名里文件那段（geo、social/x），Rel 相对项目根目录。
+type fnFile struct {
+	Name, Path, Rel string
+	Entry           os.DirEntry
+}
+
+// fnFiles 列出项目 local/ 和每个插件 plugins/<id>/local/ 下的本机函数文件。
+func fnFiles(workDir string) ([]fnFile, error) {
+	var out []fnFile
+	for _, id := range plugin.Sources(workDir) {
+		dir := filepath.Join(plugin.Root(workDir, id), Dir)
+		ents, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range ents {
+			name := e.Name()
+			ext := filepath.Ext(name)
+			base := strings.TrimSuffix(name, ext)
+			if e.IsDir() || (ext != ".ts" && ext != ".js") || !fileRe.MatchString(base) || strings.HasSuffix(base, ".d") {
+				continue
+			}
+			out = append(out, fnFile{Name: plugin.Name(id, base), Path: filepath.Join(dir, name), Rel: plugin.Rel(id, Dir) + "/" + name, Entry: e})
+		}
+	}
+	return out, nil
 }
 
 // compile 用 esbuild 打包成一段 CommonJS。相对 import 会一起打进来；talizen 的类型导入会被去掉。
@@ -178,6 +234,9 @@ func compile(path string) (string, error) {
 		Sourcemap:   api.SourceMapNone,
 	})
 	if len(res.Errors) > 0 {
+		if err := missingPlugin(res.Errors); err != nil {
+			return "", err
+		}
 		var msgs []string
 		for _, e := range res.Errors {
 			loc := ""
@@ -194,24 +253,31 @@ func compile(path string) (string, error) {
 	return string(res.OutputFiles[0].Contents), nil
 }
 
-// List 列出 local/ 下所有文件导出的函数。
-func List(workDir string) ([]Fn, error) {
-	ents, err := os.ReadDir(filepath.Join(workDir, Dir))
-	if os.IsNotExist(err) {
-		return []Fn{}, nil
+var missingPluginRe = regexp.MustCompile(`Could not resolve "(?:\.\./)+` + plugin.Dir + `/([a-z][a-z0-9]{1,19})/`)
+
+// missingPlugin：项目的代码 import 了插件的文件（../plugins/<id>/…），插件却没装，编译报「找不到」：换成说清楚去装哪个插件。
+func missingPlugin(errs []api.Message) error {
+	for _, e := range errs {
+		if m := missingPluginRe.FindStringSubmatch(e.Text); m != nil {
+			file := ""
+			if e.Location != nil {
+				file = filepath.Base(e.Location.File)
+			}
+			return i18n.Errorf("%s 用到了插件 %s，这个项目还没装：到 设置 → 项目 → 插件 里装上 %s", "%s uses the plugin %s, which this project hasn't installed: install %s in Settings → Project → Plugins", file, m[1], m[1])
+		}
 	}
+	return nil
+}
+
+// List 列出 local/ 和插件 local/ 下所有文件导出的函数。
+func List(workDir string) ([]Fn, error) {
+	files, err := fnFiles(workDir)
 	if err != nil {
 		return nil, err
 	}
 	out := []Fn{}
-	for _, e := range ents {
-		name := e.Name()
-		ext := filepath.Ext(name)
-		base := strings.TrimSuffix(name, ext)
-		if e.IsDir() || (ext != ".ts" && ext != ".js") || !fileRe.MatchString(base) || strings.HasSuffix(base, ".d") {
-			continue
-		}
-		code, err := compile(filepath.Join(workDir, Dir, name))
+	for _, f := range files {
+		code, err := compile(f.Path)
 		if err != nil {
 			continue
 		}
@@ -222,7 +288,7 @@ func List(workDir string) ([]Fn, error) {
 		}
 		for _, k := range exports.Keys() {
 			if _, ok := goja.AssertFunction(exports.Get(k)); ok {
-				out = append(out, Fn{Name: base + "." + k, File: Dir + "/" + name})
+				out = append(out, Fn{Name: f.Name + "." + k, File: f.Rel})
 			}
 		}
 	}
@@ -461,7 +527,8 @@ func (r *runner) ctxObject() *goja.Object {
 	c.Set("fetchAll", r.fetchAll)
 	c.Set("html", r.html)
 	// await ctx.mcp('server', 'tool', { …参数 })：返回工具的结构化结果（文本是 JSON 就解析好），工具报错就抛出
-	c.Set("mcp", func(server, tool string, args goja.Value) *goja.Promise {
+	// ctx.mcp.servers()：[{ name, status }]，用户加了的 MCP 和连接状态
+	mcpFn := r.vm.ToValue(func(server, tool string, args goja.Value) *goja.Promise {
 		if r.h.MCP == nil {
 			r.throw(i18n.New("这里不能用 ctx.mcp", "ctx.mcp isn't available here"))
 		}
@@ -478,7 +545,18 @@ func (r *runner) ctxObject() *goja.Object {
 			return r.rejected(err)
 		}
 		return r.resolved(res)
+	}).(*goja.Object)
+	mcpFn.Set("servers", func() []map[string]any {
+		if r.h.MCPServers == nil {
+			r.throw(i18n.New("这里不能用 ctx.mcp", "ctx.mcp isn't available here"))
+		}
+		out := []map[string]any{}
+		for _, s := range r.h.MCPServers() {
+			out = append(out, map[string]any{"name": s.Name, "status": s.Status})
+		}
+		return out
 	})
+	c.Set("mcp", mcpFn)
 	// await ctx.oauth('google', { account })：返回 access token，没连接就抛出（message 里说去哪连）；account 不给是最早连的账号。
 	// ctx.oauth.accounts('google')：这台电脑连着的账号名（邮箱），最早连的在前
 	oauth := r.vm.ToValue(func(provider string, opts map[string]any) *goja.Promise {
@@ -503,10 +581,21 @@ func (r *runner) ctxObject() *goja.Object {
 		return list
 	})
 	c.Set("oauth", oauth)
+	// ctx.agent.current()：{ id, name, provider, model, ready, error }，助手当前的模型和能不能跑
+	c.Set("agent", map[string]any{"current": func() map[string]any {
+		if r.h.AgentCurrent == nil {
+			r.throw(i18n.New("这里不能用 ctx.agent", "ctx.agent isn't available here"))
+		}
+		m := r.h.AgentCurrent()
+		return map[string]any{"id": m.ID, "name": m.Name, "provider": m.Provider, "model": m.Model, "ready": m.Ready, "error": m.Error}
+	}})
 	c.Set("browser", r.browserObject())
+	// await ctx.exec(命令, [参数…], { cwd, input, timeout, env })：跑本机的命令行工具（见 exec.go）
+	c.Set("exec", r.exec)
 	c.Set("workspace", r.h.Workspace)
 	// ctx.locale：界面语言 zh / en（设置里的语言，跟随系统时按系统语言），给用户看的报错和说明按它出两种语言
 	c.Set("locale", i18n.Locale())
+	c.Set("chat_id", r.h.ChatID)
 	c.Set("progress", func(v goja.Value) {
 		r.emit(Event{Type: "progress", Data: toPlain(v.Export())})
 	})

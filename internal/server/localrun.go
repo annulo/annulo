@@ -21,8 +21,10 @@ import (
 
 	"github.com/annulo/annulo/internal/i18n"
 
+	"github.com/annulo/annulo/internal/agent"
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/localfn"
+	"github.com/annulo/annulo/internal/plugin"
 	"github.com/annulo/annulo/internal/version"
 )
 
@@ -75,6 +77,8 @@ func (s *Server) localHost() localfn.Host {
 		LLMProviders:  s.llmProviders,
 		LLMFetch:      s.llmFetch,
 		MCP:           s.mcp.Call,
+		MCPServers:    s.mcpServers,
+		AgentCurrent:  s.agentCurrent,
 		OAuth:         s.conns.Token,
 		OAuthAccounts: s.conns.Accounts,
 		Browser:       browserHost{s.browser},
@@ -84,25 +88,47 @@ func (s *Server) localHost() localfn.Host {
 	}
 }
 
+// agentCurrent 是 ctx.agent.current()：复用助手自己的判断（agent.LLM），和点了任务后实际跑的是同一个模型
+func (s *Server) agentCurrent() localfn.AgentModel {
+	m, err := s.agent.LLM()
+	out := localfn.AgentModel{ID: m.ID, Name: m.Label(), Provider: m.Provider, Model: m.Model, Ready: err == nil}
+	if err != nil {
+		out.Error = err.Error()
+	}
+	return out
+}
+
+// mcpServers 是 ctx.mcp.servers()：只给名字和状态，授权地址、工具列表不给本机函数
+func (s *Server) mcpServers() []localfn.MCPServer {
+	out := []localfn.MCPServer{}
+	for _, st := range s.mcp.Status() {
+		out = append(out, localfn.MCPServer{Name: st.Name, Status: st.Status})
+	}
+	return out
+}
+
 var secretUseRe = regexp.MustCompile(`secrets\.get\(\s*['"]([A-Z][A-Z0-9_]+)['"]`)
 
-// secretNamesInUse 是本机函数里用到的密钥名（扫 local/ 的源码），设置页据此提示「还缺哪个」。
+// secretNamesInUse 是本机函数里用到的密钥名（扫 local/ 和插件 local/ 的源码），设置页据此提示「还缺哪个」。
 func (s *Server) secretNamesInUse() []string {
 	out := []string{} // 没有也是空数组：设置 → 密钥直接 .filter
 	if !s.ready.Load() {
 		return out
 	}
 	seen := map[string]bool{}
-	ents, _ := os.ReadDir(filepath.Join(s.ws.Dir, localfn.Dir))
-	for _, e := range ents {
-		b, err := os.ReadFile(filepath.Join(s.ws.Dir, localfn.Dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		for _, m := range secretUseRe.FindAllStringSubmatch(string(b), -1) {
-			if !seen[m[1]] {
-				seen[m[1]] = true
-				out = append(out, m[1])
+	for _, id := range plugin.Sources(s.ws.Dir) {
+		dir := filepath.Join(plugin.Root(s.ws.Dir, id), localfn.Dir)
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			for _, m := range secretUseRe.FindAllStringSubmatch(string(b), -1) {
+				if !seen[m[1]] {
+					seen[m[1]] = true
+					out = append(out, m[1])
+				}
 			}
 		}
 	}
@@ -120,8 +146,9 @@ func (s *Server) apiLocalFunctions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiLocalRun(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Fn    string `json:"fn"`
-		Input any    `json:"input"`
+		Fn     string `json:"fn"`
+		Input  any    `json:"input"`
+		ChatID string `json:"chat_id"` // 助手在对话里用 annulo run 跑的：哪段对话（ctx.chat_id）
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err := json.Unmarshal(b, &in); err != nil || in.Fn == "" {
@@ -139,6 +166,9 @@ func (s *Server) apiLocalRun(w http.ResponseWriter, r *http.Request) {
 
 	host := s.localHost()
 	host.RunID = run.id
+	if agent.ValidChatID(in.ChatID) {
+		host.ChatID = in.ChatID
+	}
 	go func() {
 		defer cancel()
 		start := time.Now()

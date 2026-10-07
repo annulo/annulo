@@ -17,7 +17,7 @@ import (
 
 // 对话里的图片：先传到本机 ~/.shuttle/uploads，消息里只存引用（/_shuttle/uploads/<name>），
 // 对话历史 JSONL 不塞 base64。发给模型时再读文件；同时把本机路径告诉 agent，它能用
-// creght upload 把图放进文章、站点。文件名是内容的 sha256，同一张图只存一份。
+// annulo upload 把图放进文章、资料库。文件名是内容的 sha256，同一张图只存一份。
 
 const MaxUploadBytes = 20 << 20
 

@@ -23,6 +23,7 @@ import (
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/config"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localcmd"
 )
 
 // 外部 agent：本机装了 Claude Code / Codex 的，可以直接让它们当 Shuttle 的助手（设置 → 模型里和模型一起选）。
@@ -53,6 +54,16 @@ var cliEngines = []struct {
 
 // IsCLIProvider：这个服务商是本机的外部 agent（Claude Code / Codex）。
 func IsCLIProvider(p string) bool { return p == EngineClaude || p == EngineCodex }
+
+// CLIName 是外部 agent 的显示名（Claude Code / Codex）。
+func CLIName(p string) string {
+	for _, e := range cliEngines {
+		if e.id == p {
+			return e.name
+		}
+	}
+	return p
+}
 
 // cliModels 是本机装了的外部 agent，排在模型列表最后。每个引擎一个「默认」（用它自己配置的模型，id 是 cli:<引擎>），
 // 再加上能选的模型（cli:<引擎>/<模型>，跑的时候带 --model / -m）：Claude 用它认的别名，Codex 读它自己的模型目录（codex debug models）。
@@ -280,94 +291,10 @@ func codexCatalog(ctx context.Context) []engineModel {
 	return list
 }
 
-// 命令在哪：Electron 从 Finder 启动时 PATH 只有系统目录，按登录 shell 的 PATH 找；找到的缓存 1 分钟（装了马上能用）。
-var cliLookup struct {
-	sync.Mutex
-	path  string // 登录 shell 的 PATH
-	found map[string]string
-	at    time.Time
-}
+// 命令在哪：按登录 shell 的 PATH 找（internal/localcmd）。
+func findCLI(bin string) string { return localcmd.Find(bin) }
 
-func findCLI(bin string) string {
-	cliLookup.Lock()
-	defer cliLookup.Unlock()
-	if time.Since(cliLookup.at) > time.Minute {
-		cliLookup.found, cliLookup.at = map[string]string{}, time.Now()
-	}
-	if p, ok := cliLookup.found[bin]; ok {
-		return p
-	}
-	p := ""
-	if lp, err := exec.LookPath(bin); err == nil {
-		p = lp
-	} else {
-		for _, dir := range filepath.SplitList(loginPath()) {
-			if c := filepath.Join(dir, bin); isExec(c) {
-				p = c
-				break
-			}
-		}
-	}
-	cliLookup.found[bin] = p
-	return p
-}
-
-func isExec(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir() && (runtime.GOOS == "windows" || st.Mode()&0o111 != 0)
-}
-
-// loginPath 是登录 shell 的 PATH 加上常见的安装目录（调用方持有 cliLookup）。codex 是 node 脚本，跑它也要这份 PATH 才找得到 node。
-func loginPath() string {
-	if cliLookup.path != "" {
-		return cliLookup.path
-	}
-	home, _ := os.UserHomeDir()
-	parts := []string{os.Getenv("PATH")}
-	if runtime.GOOS != "windows" {
-		sh := os.Getenv("SHELL")
-		if sh == "" {
-			sh = "/bin/zsh"
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		out, err := exec.CommandContext(ctx, sh, "-lic", "echo __PATH__$PATH").Output()
-		cancel()
-		if err == nil {
-			if _, p, ok := strings.Cut(string(out), "__PATH__"); ok {
-				parts = append(parts, strings.TrimSpace(p))
-			}
-		}
-		parts = append(parts, filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".npm-global", "bin"))
-	} else {
-		parts = append(parts, filepath.Join(home, ".local", "bin"), filepath.Join(os.Getenv("APPDATA"), "npm"))
-	}
-	seen := map[string]bool{}
-	var dirs []string
-	for _, p := range parts {
-		for _, d := range filepath.SplitList(p) {
-			if d != "" && !seen[d] {
-				seen[d] = true
-				dirs = append(dirs, d)
-			}
-		}
-	}
-	cliLookup.path = strings.Join(dirs, string(os.PathListSeparator))
-	return cliLookup.path
-}
-
-func cliEnv(extra ...string) []string {
-	findCLI("") // 确保 loginPath 算过
-	cliLookup.Lock()
-	p := loginPath()
-	cliLookup.Unlock()
-	env := []string{}
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "PATH=") {
-			env = append(env, kv)
-		}
-	}
-	return append(append(env, "PATH="+p), extra...)
-}
+func cliEnv(extra ...string) []string { return localcmd.Env(extra...) }
 
 // cliRun 是一轮外部 agent 的输入。
 type cliRun struct {
@@ -380,6 +307,7 @@ type cliRun struct {
 	session   string // 接着哪个会话；空是新会话
 	model     string // 用哪个模型（--model / -m）；空用它自己配置的
 	thinking  string
+	chatID    string // 这段对话的 id：给它的 bash 带上 ANNULO_CHAT_ID，annulo run 传给本机函数（ctx.chat_id）
 	mcpURL    string
 	mcpToken  string
 	extraDirs []string
@@ -461,10 +389,11 @@ func (r cliRun) command(ctx context.Context) *exec.Cmd {
 	}
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Dir = r.cwd
-	cmd.Env = cliEnv(append(brand.ChildEnv("MCP_TOKEN", r.mcpToken), brand.ChildEnv("AGENT", r.engine)...)...)
+	env := append(brand.ChildEnv("MCP_TOKEN", r.mcpToken), brand.ChildEnv("AGENT", r.engine)...)
+	cmd.Env = cliEnv(append(env, brand.ChildEnv("CHAT_ID", r.chatID)...)...)
 	cmd.Stdin = strings.NewReader(r.prompt)
 	cmd.WaitDelay = 3 * time.Second
-	setProcGroup(cmd)
+	localcmd.SetProcGroup(cmd)
 	return cmd
 }
 
@@ -966,7 +895,7 @@ func (a *Agent) runCLI(ctx context.Context, chatID, prompt string, images []stri
 	delete(a.waiting, chatID)
 	cwd := a.cwd
 	system := a.systemPrompt() + cliNote(l.Provider)
-	thinking := a.cfg.ThinkingLevel()
+	thinking := clampCLIThinking(a.thinkingFor(chatID)) // 本机 agent 只有 低 / 中 / 高
 	links := a.skillLinks()
 	a.mu.Unlock()
 	defer func() {
@@ -1001,7 +930,7 @@ func (a *Agent) runCLI(ctx context.Context, chatID, prompt string, images []stri
 		model = l.Model
 	}
 	r := cliRun{engine: l.Provider, bin: bin, cwd: cwd, system: system, prompt: prompt, images: images, session: session, model: model, thinking: thinking,
-		extraDirs: []string{a.installedDir()}}
+		chatID: chatID, extraDirs: []string{a.installedDir()}}
 	if a.MCPURL != "" {
 		r.mcpURL, r.mcpToken = a.MCPURL, a.mcpToken
 	}
@@ -1100,7 +1029,7 @@ func cliComplete(ctx context.Context, engine, system, prompt string) (string, er
 	cmd.Env = cliEnv()
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.WaitDelay = 3 * time.Second
-	setProcGroup(cmd)
+	localcmd.SetProcGroup(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

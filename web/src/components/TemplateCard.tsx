@@ -41,22 +41,22 @@ type UpgradeResult = { status: 'up_to_date' | 'merged' | 'conflict'; from: numbe
 type MergeOut = { result: UpgradeResult; push_error?: string; push_conflicts?: string[]; record_error?: string }
 type RestoreOut = { commit: string; files: string[]; result?: UpgradeResult; upgrade_error?: string; push_error?: string; push_conflicts?: string[] }
 
-// 交给助手的话里共用的解法（助手的 shuttle skill 里有同样的规则）：小改动两边都保留，整页改了用途、合不到一起的先问用户
-const HOW = () =>
-  t('两边各改了一小处、互不矛盾的，合在一起、两边都保留；一边把整个页面或文件改成了别的用途（比如模板的后台页面被改成了网站），或者两边的改法合在一起跑不起来的，不要自己选，用 request_user_input 把两种选法和各自的后果摆给我选。改完确认没有 <<<<<<< / >>>>>>> 标记，再用 shuttle push 推到预览。')
+// 交给助手的话里共用的解法（助手的 annulo skill 的 git.md 里有同样的规则）：小改动两边都保留，整页改了用途、合不到一起的先问用户
+export const HOW = () =>
+  t('两边各改了一小处、互不矛盾的，合在一起、两边都保留；一边把整个页面或文件改成了别的用途（比如模板的后台页面被改成了网站），或者两边的改法合在一起跑不起来的，不要自己选，用 request_user_input 把两种选法和各自的后果摆给我选。改完确认没有 <<<<<<< / >>>>>>> 标记，再用 annulo push 推到预览。')
 
 /** git 合并（升级、换模板）的冲突 */
 const mergeText = (what: string, files: string[]) =>
   t('{what}合并时有冲突，这些文件里有冲突标记：{files}。看 git log template 和 git diff 弄清模板和这个项目各改了什么，逐个解决。', { what, files: files.join(', ') }) + HOW()
 
 /** 推到预览时和远端（编辑器、别的电脑）改动的冲突 */
-const pushText = (files: string[]) =>
+export const pushText = (files: string[]) =>
   t('推到预览时，远端（creght 编辑器或别的电脑）也改过这些文件，合并有冲突：{files}。标记里 local 是本机的、remote 是远端的，逐个解决。', { files: files.join(', ') }) + HOW()
 
 /**
  * 交给助手：新开一段对话在后台跑，右侧打开它（和运营后台里的按钮一样，不塞进用户正在聊的对话）。
  */
-async function handOff(text: string, title: string) {
+export async function handOff(text: string, title: string) {
   try {
     const r = await post('local/ask', { text, title })
     const { chat_id } = (await r.json()) as { chat_id: string }

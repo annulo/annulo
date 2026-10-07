@@ -29,7 +29,7 @@ import (
 //   - 客户端按集群动态注册一次（POST /api/oauth/register），client id 记在同一个文件里；
 //   - 授权时必须带 resource={api_host}/api，拿到的 token 才能打平台接口；
 //   - access token 1 小时，refresh token 30 天、每次刷新都换新的、旧的立刻作废，同一个旧 refresh token 用两次整条授权作废。
-//     所以刷新要跨进程串行（App 和命令行 shuttle push 是两个进程）：文件锁里先重读一遍，别人刚刷过就直接用。
+//     所以刷新要跨进程串行（App 和命令行 annulo push 是两个进程）：文件锁里先重读一遍，别人刚刷过就直接用。
 
 // OAuthScopes 是向平台要的权限：模板、项目和站点、业务表、平台模型、远程访问、MCP 读写。
 const OAuthScopes = "profile templates projects tables llm remote site:read site:write"

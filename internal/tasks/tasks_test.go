@@ -84,3 +84,13 @@ func TestPrompt(t *testing.T) {
 		t.Fatalf("List = %d", len(l))
 	}
 }
+
+// frontmatter 的 thinking：认得的档位才收，不认得的当没写
+func TestThinking(t *testing.T) {
+	if got := parse("---\nname: 抽资料\nthinking: low\n---\n正文").Thinking; got != "low" {
+		t.Fatalf("thinking = %q", got)
+	}
+	if got := parse("---\nname: x\nthinking: turbo\n---\n正文").Thinking; got != "" {
+		t.Fatalf("不认得的档位应该忽略：%q", got)
+	}
+}

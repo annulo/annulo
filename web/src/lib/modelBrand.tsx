@@ -139,7 +139,12 @@ export function getLlmModelBrand(...candidates: Array<string | undefined>): LlmM
 
 /** 模型的厂商 logo；认不出厂商返回 undefined，由调用方兜底（比如 Select 显示首字母） */
 export function ModelIcon({ m }: { m: ModelConfig }) {
-  const b = getLlmModelBrand(m.model, m.name, m.label)
+  return BrandIcon({ of: [m.model, m.name, m.label] })
+}
+
+/** 按名字（厂商名、协议名、模型 id）取厂商 logo，比如协议「OpenAI 兼容」「Anthropic Messages」；认不出返回 undefined */
+export function BrandIcon({ of }: { of: Array<string | undefined> }) {
+  const b = getLlmModelBrand(...of)
   if (!b) return undefined
   return (
     <svg viewBox="0 0 24 24" className="size-3.5 text-foreground/80" fill={b.color} fillRule={b.fillRule} aria-label={b.label}>

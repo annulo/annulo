@@ -73,7 +73,7 @@ func promptFor(text string, images []string) string {
 	if len(images) == 0 {
 		return text
 	}
-	note := "[用户附了 " + fmt.Sprint(len(images)) + " 张图片，本机文件：" + strings.Join(images, "、") + "]"
+	note := "[用户附了 " + fmt.Sprint(len(images)) + " 张图片，本机文件：" + strings.Join(images, "、") + "；要放进项目（文章、资料库）用 annulo upload 拿地址]"
 	if text == "" {
 		return note
 	}
@@ -263,18 +263,19 @@ func (s *Server) execRun(ctx context.Context, chatID, prompt string, images []st
 		log.Printf("保存对话 %s 失败：%v", chatID, err)
 	}
 	run.finish()
-	s.runsMu.Lock()
-	if s.runs[chatID] == run {
-		delete(s.runs, chatID)
-	}
-	s.runsMu.Unlock()
 
-	// 每轮结束把项目的改动提交一次：助手忘了提交，每一轮也能单独回滚（没有 git 就跳过）
+	// 每轮结束把项目的改动提交一次：助手忘了提交，每一轮也能单独回滚（没有 git 就跳过）。
+	// 提交完再撤掉这一轮：看 runs 判断「跑完没有」的（页面轮询、下一轮）拿到的是已经提交好的项目
 	if wsgit.Available() == nil {
 		if _, err := wsgit.Commit(dir, commitMessage(prompt)); err != nil {
 			log.Printf("自动提交项目失败：%v", err)
 		}
 	}
+	s.runsMu.Lock()
+	if s.runs[chatID] == run {
+		delete(s.runs, chatID)
+	}
+	s.runsMu.Unlock()
 	// 回答取最后一步里的文字（前面几步是边调工具边说的过程）
 	var answer strings.Builder
 	for _, p := range st.parts {

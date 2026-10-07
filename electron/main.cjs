@@ -192,7 +192,7 @@ async function confirmStopChats(detail, action) {
 async function requestQuit() {
   if (quitting || quitPending) return
   quitPending = true
-  if (!(await confirmStopChats(L('退出会停止这些对话。关闭窗口可以让它们在后台继续。', 'Quitting stops these chats. Close the window to keep them running in the background.'), L('退出', 'Quit')))) { quitPending = false; return }
+  if (!(await confirmStopChats(L('退出会停止这些对话。', 'Quitting stops these chats.'), L('退出', 'Quit')))) { quitPending = false; return }
   quitting = true; generation++
   await stopHelper()
   app.quit()

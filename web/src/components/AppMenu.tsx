@@ -33,7 +33,7 @@ export function AppMenu({ theme, onToggleTheme, loggedIn }: { theme: 'dark' | 'l
   const mac = /Mac/.test(navigator.platform)
   const items = [
     { label: t('设置'), icon: Settings, go: () => navigate('settings'), hint: mac ? '⌘,' : 'Ctrl+,' },
-    { label: t('用量'), icon: BarChart3, go: () => navigate('usage') },
+    { label: t('用量'), icon: BarChart3, go: () => navigate('settings', '#usage') },
     { label: theme === 'dark' ? t('切换到浅色') : t('切换到深色'), icon: theme === 'dark' ? Sun : Moon, go: onToggleTheme },
     { label: t('关于 Annulo'), icon: Info, go: () => navigate('settings', '#about') },
   ]
@@ -50,7 +50,7 @@ export function AppMenu({ theme, onToggleTheme, loggedIn }: { theme: 'dark' | 'l
           open && 'bg-accent',
         )}
       >
-        <img src={theme === 'dark' ? '/_shuttle/annulo-dark.svg' : '/_shuttle/annulo-light.svg'} alt="" className="h-6" />
+        <img src={theme === 'dark' ? '/_shuttle/annulo-dark.svg' : '/_shuttle/annulo-light.svg'} alt="" className="h-4" />
         <span className="text-xs font-bold">Annulo</span>
         <ChevronDown className="size-3.5 text-muted-foreground" />
       </button>

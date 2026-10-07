@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 
 // Annulo 界面只有几个视图，用 pathname 区分，不引路由库。
-export type View = 'backend' | 'usage' | 'settings'
+export type View = 'backend' | 'settings'
 
 const BASE = '/_shuttle'
 
+// 用量原来是单独的视图，现在是设置里的一节：老地址 /_shuttle/usage 换成 /_shuttle/settings#usage
+if (location.pathname.startsWith(BASE + '/usage')) history.replaceState(null, '', BASE + '/settings#usage')
+
 export function viewOf(path = location.pathname): View {
-  if (path.startsWith(BASE + '/usage')) return 'usage'
   if (path.startsWith(BASE + '/settings')) return 'settings'
   return 'backend'
 }

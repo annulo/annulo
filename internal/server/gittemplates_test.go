@@ -39,9 +39,9 @@ func TestGitTemplatesListed(t *testing.T) {
 	host := "https://not-signed-in.invalid" // 这台机器没登录过它：git 模板排前面
 	stubTemplates(t, map[string][]creght.OpsTemplate{host: {{ProjectID: "p1", SiteID: "s1", NameLocales: map[string]string{"zh-CN": "外贸助手"}}}})
 	repo := localGitTemplate(t)
-	old := defaultTemplateSources
-	defaultTemplateSources = nil // 测试不连 GitHub
-	t.Cleanup(func() { defaultTemplateSources = old })
+	old := templateCatalog
+	templateCatalog = nil // 测试不连 GitHub
+	t.Cleanup(func() { templateCatalog = old })
 	setTemplateSources(t.TempDir(), []string{repo + "#blank", repo + "#blank"}) // 重复的只列一次
 	t.Cleanup(func() { setTemplateSources("", nil) })
 	gitMetaCache.Lock()

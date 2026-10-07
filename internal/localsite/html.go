@@ -12,7 +12,8 @@ import (
 const errorsScript = `<script>(function(){
   var list = window.__TALIZEN_RENDER_ERRORS__ = %s;
   function push(source, message, detail){ list.push({ level: "error", source: source, message: String(message), detail: detail || "" }) }
-  addEventListener("error", function(e){ if (e.error || e.message) push("window.error", e.message || e.error, e.error && e.error.stack) });
+  // ResizeObserver loop …：浏览器的提示（回调里改了布局，通知推迟到下一帧），页面没坏，不算报错
+  addEventListener("error", function(e){ if (/^ResizeObserver loop /.test(e.message || "")) return; if (e.error || e.message) push("window.error", e.message || e.error, e.error && e.error.stack) });
   addEventListener("unhandledrejection", function(e){ var r = e.reason; push("unhandledrejection", r && r.message ? (r.name || "Error") + ": " + r.message : r, r && r.stack) });
   // 开发版 React 打日志用 console.error("%o\n\n%s", …) 这种格式符，照 console 的规则换掉再记
   function str(a){ return a && a.stack ? a.stack : typeof a === "object" ? JSON.stringify(a) : String(a) }
@@ -94,7 +95,9 @@ func (r *Renderer) ServePage(w http.ResponseWriter, req *http.Request) error {
 	s.WriteString(meta.Head)
 	s.WriteString("\n</head>\n<body")
 	writeAttrs(&s, nil, meta.BodyAttrs)
-	s.WriteString(">\n<div id=\"root\"></div>\n<script>")
+	s.WriteString(">\n<div id=\"root\">")
+	s.WriteString(loadingHTML(r.loadingLang(locale)))
+	s.WriteString("</div>\n<script>")
 	s.WriteString("window.__SHUTTLE__ = " + string(mustJSON(map[string]any{
 		"build":    b.id,
 		"entry":    b.entry,
@@ -127,6 +130,34 @@ func (r *Renderer) ServePage(w http.ResponseWriter, req *http.Request) error {
 	s.WriteString("\n</body>\n</html>\n")
 	writeHTML(w, s.String())
 	return nil
+}
+
+// 页面渲染出来之前 #root 里放的加载提示，React 第一次渲染时整个换掉。
+// 第一次打开要从 CDN 拉 React、Tailwind browser 和页面的包，慢的时候能有十几秒，不放这个就是一整片空白。
+// 只用内联样式和系统颜色（Canvas / CanvasText）：这时 Tailwind 还没加载，颜色跟着模板 head 里设的 color-scheme 走。
+// 等久了补一句为什么慢；脚本在 React 渲染后找不到元素就什么也不做。
+const loadingTpl = `<div id="__shuttle_loading" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font:13px/1.5 system-ui,-apple-system,sans-serif;color:CanvasText;background:Canvas">` +
+	`<style>@keyframes __shuttle_spin{to{transform:rotate(360deg)}}</style>` +
+	`<div style="width:22px;height:22px;border-radius:50%;border:2px solid color-mix(in srgb,CanvasText 15%,transparent);border-top-color:color-mix(in srgb,CanvasText 60%,transparent);animation:__shuttle_spin .8s linear infinite"></div>` +
+	`<div style="opacity:.6">%s</div>` +
+	`<div id="__shuttle_loading_slow" style="opacity:.45;max-width:320px;text-align:center;visibility:hidden">%s</div>` +
+	`<script>setTimeout(function(){var e=document.getElementById("__shuttle_loading_slow");if(e)e.style.visibility="visible"},5000)</script>` +
+	`</div>`
+
+func loadingHTML(lang string) string {
+	text, slow := "Loading…", "The first load downloads the page's packages and can take a while."
+	if strings.HasPrefix(strings.ToLower(lang), "zh") {
+		text, slow = "加载中…", "第一次打开要下载页面用到的包，可能要一会儿"
+	}
+	return strings.Replace(strings.Replace(loadingTpl, "%s", text, 1), "%s", slow, 1)
+}
+
+// loadingLang：加载提示用的语言，页面有语言就跟页面，没有跟 Annulo 界面
+func (r *Renderer) loadingLang(locale string) string {
+	if locale == "" && r.UILocale != nil {
+		return r.UILocale()
+	}
+	return locale
 }
 
 // 样式里出现 </style> 会提前结束标签

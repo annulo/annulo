@@ -72,4 +72,23 @@ func TestSchedulesOtherProjects(t *testing.T) {
 			t.Fatalf("交给助手的不该在别的项目里跑：%+v", j)
 		}
 	}
+	waitSchedulesIdle(t, s)
+}
+
+// waitSchedulesIdle 等定时任务都跑完：跑完那一刻还要写运行记录（schedules.json），不等的话临时目录删的时候它还在写
+func waitSchedulesIdle(t *testing.T, s *Server) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		s.sched.mu.Lock()
+		busy := false
+		for _, p := range s.sched.projects {
+			busy = busy || len(p.running) > 0
+		}
+		s.sched.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("定时任务 5 秒还没跑完")
 }

@@ -474,6 +474,7 @@ function ChatSession({
     post(`agent/chats/${chatId}/feedback`, { message_id: id, rating: r }).catch(() => {})
   }
   const scroller = useRef<HTMLDivElement>(null)
+  const lastTop = useRef(0)
   const box = useRef<HTMLTextAreaElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const composing = useRef(false)
@@ -490,7 +491,8 @@ function ChatSession({
     if (!el) return
     if (stuck) el.scrollTop = el.scrollHeight
     // 内容不够一屏（比如折叠了、换了短内容）就算停在底部，「下面有新内容」的提示条不该出现
-    else if (el.scrollHeight - el.clientHeight - el.scrollTop < 40) setStuck(true)
+    // 只认真到底了（被内容变短顶到底）；离底几像素是用户刚往上滚，不能又贴回去
+    else if (el.scrollHeight - el.clientHeight - el.scrollTop < 1) setStuck(true)
   }, [messages, status, stuck])
 
   // 输入框自动长高，最多 12rem
@@ -606,9 +608,17 @@ function ChatSession({
     <div className="flex min-h-0 flex-1 flex-col p-3">
       <div
         ref={scroller}
+        // 流式输出时每帧都在贴底：触控板往上一点点还在底部 40px 内，会被立刻拉回去。
+        // 所以用户往上滚（滚轮向上、或 scrollTop 变小）就马上松开，回到底部附近再贴上
+        onWheel={(e) => {
+          if (e.deltaY < 0) setStuck(false)
+        }}
         onScroll={(e) => {
           const el = e.currentTarget
-          setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+          const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+          const up = el.scrollTop < lastTop.current && gap > 1
+          lastTop.current = el.scrollTop
+          setStuck(!up && gap < 40)
         }}
         className="scroll-thin relative -mr-2 min-h-0 flex-1 overflow-y-auto pr-2"
       >
@@ -632,6 +642,8 @@ function ChatSession({
                   m={m}
                   live={busy && i === messages.length - 1}
                   onAnswer={i === messages.length - 1 && !busy ? send : undefined}
+                  // 紧跟着的用户消息：问卷没填、直接在对话里回复的，问卷卡片按它给选中的选项打勾
+                  reply={messages[i + 1]?.role === 'user' ? messages[i + 1].parts.map((p) => (p.type === 'text' ? p.text : '')).join('') : undefined}
                   rating={feedback[m.id]}
                   onRate={(r) => rate(m.id, r)}
                 />
@@ -722,13 +734,16 @@ function ChatSession({
           />
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1">
+              <ModelMenu llm={llm} onChanged={onLLMChanged} onManage={onOpenSettings} />
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
               <Tip label={atts.full ? t('最多 8 张图片') : t('添加图片（也可以直接粘贴或拖进来）')} side="top">
                 <button
                   type="button"
                   onClick={() => picker.current?.click()}
                   disabled={atts.full}
                   aria-label={t('添加图片')}
-                  className="-ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40"
+                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40"
                 >
                   <ImagePlus className="size-4" />
                 </button>
@@ -745,9 +760,6 @@ function ChatSession({
                   box.current?.focus()
                 }}
               />
-              <ModelMenu llm={llm} onChanged={onLLMChanged} onManage={onOpenSettings} />
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
               {busy && hasDraft && (
                 <Tip label={t('插话：助手做完手头这一步就会看到（回车也可以）')} side="top">
                   <button
@@ -980,7 +992,7 @@ const liveMd = mdComponents(true)
 const doneMd = mdComponents(false)
 
 // onAnswer：这是对话的最后一条、助手没在跑时才有，上面的问卷可以作答（答案作为新消息发出）
-function AssistantMessage({ m, live, onAnswer, rating, onRate }: { m: Msg; live: boolean; onAnswer?: (text: string) => void; rating?: 'up' | 'down'; onRate: (r: 'up' | 'down' | 'none') => void }) {
+function AssistantMessage({ m, live, onAnswer, reply, rating, onRate }: { m: Msg; live: boolean; onAnswer?: (text: string) => void; reply?: string; rating?: 'up' | 'down'; onRate: (r: 'up' | 'down' | 'none') => void }) {
   const blocks = blocksOf(m.parts)
   // 跑完、有文字回复的才能评价
   const rateable = !live && blocks.some((b) => b.kind === 'text' && b.text.trim())
@@ -995,7 +1007,7 @@ function AssistantMessage({ m, live, onAnswer, rating, onRate }: { m: Msg; live:
               </Markdown>
             </div>
           ) : b.kind === 'ask' ? (
-            <UserInputCard key={i} part={b.part} onAnswer={onAnswer} />
+            <UserInputCard key={i} part={b.part} onAnswer={onAnswer} reply={reply} />
           ) : b.kind === 'steer' ? (
             // 用户在这一轮中间插的话，出现在它被送达模型的位置
             <div key={i} className="flex justify-end py-1">
@@ -1079,7 +1091,6 @@ function StepGroup({ parts, live }: { parts: Part[]; live: boolean }) {
           )}
         </div>
       )}
-      {live && !open && last && last.state === 'input-available' && <div className="mt-1 pl-[22px] text-[11px] text-muted-foreground">{t('正在执行…')}</div>}
     </div>
   )
 }

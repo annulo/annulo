@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/annulo/annulo/internal/agent"
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/i18n"
 
@@ -56,6 +57,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiTemplateRestore(w, r)
 	case p == "template/restore/undo" && r.Method == http.MethodPost:
 		s.apiTemplateRestoreUndo(w, r)
+	case p == "plugins" || strings.HasPrefix(p, "plugins/"):
+		s.handlePlugins(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "plugins"), "/"))
 	case p == "setup" && r.Method == http.MethodGet:
 		s.apiSetupGet(w, r)
 	case p == "setup" && r.Method == http.MethodPost:
@@ -99,6 +102,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiLLMSaveProvider(w, r)
 	case strings.HasPrefix(p, "settings/llm/providers/") && r.Method == http.MethodDelete:
 		s.apiLLMDeleteProvider(w, r, strings.TrimPrefix(p, "settings/llm/providers/"))
+	case p == "settings/llm/model-defaults" && r.Method == http.MethodPost:
+		s.apiLLMModelDefaults(w, r)
+	case p == "settings/llm/provider-models" && r.Method == http.MethodPost:
+		s.apiLLMProviderModels(w, r)
 	case p == "settings/llm/test" && r.Method == http.MethodPost:
 		s.apiLLMTest(w, r)
 	case p == "usage" && r.Method == http.MethodGet:
@@ -309,7 +316,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 			"error":     errString(llmErr),
 			"reasoning": llm.Reasoning,
 			"provider":  llm.Provider,
-			"thinking":  s.agent.ThinkingLevel(),
+			// thinking：当前模型实际用的档（选的档它没有时是最接近的那档）；thinking_levels：当前模型支持的档
+			"thinking":        agent.EffectiveThinking(llm, s.agent.ThinkingLevel()),
+			"thinking_levels": agent.ModelThinking(llm).Levels,
 		},
 	}
 	host := s.loginHost()

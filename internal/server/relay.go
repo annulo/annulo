@@ -150,11 +150,13 @@ func (s *Server) projectHost(projectID string) (localfn.Host, error) {
 	return h, nil
 }
 
-// otherProjects 缓存别的项目的表 id 和表声明（按项目），手机上连着发几次不用每次都查。
-var otherProjects sync.Map // projectID → *projectDB
+// otherProjects 缓存别的项目的表 id 和表声明（按项目和它的目录：同一个 id 换了目录，表声明、数据库都不是原来那份），
+// 手机上连着发几次不用每次都查。
+var otherProjects sync.Map // projectID + "\x00" + dir → *projectDB
 
 func (s *Server) otherProject(ws *creght.Workspace) *projectDB {
-	if v, ok := otherProjects.Load(ws.ProjectID); ok {
+	key := ws.ProjectID + "\x00" + ws.Dir
+	if v, ok := otherProjects.Load(key); ok {
 		return v.(*projectDB)
 	}
 	tables := &workspaceTables{}
@@ -183,7 +185,7 @@ func (s *Server) otherProject(ws *creght.Workspace) *projectDB {
 		}
 	}
 	p := &projectDB{c: store, projectID: ws.ProjectID, tids: &tableIDs{}, isTable: isTable, tableErr: tableErr}
-	v, _ := otherProjects.LoadOrStore(ws.ProjectID, p)
+	v, _ := otherProjects.LoadOrStore(key, p)
 	return v.(*projectDB)
 }
 

@@ -92,14 +92,46 @@ func New(cfg *config.Config, web fs.FS, ws *creght.Workspace, ag *agent.Agent, h
 	go s.retryFeedback(context.Background())
 	go s.creghtEnvLoop(context.Background())
 	// agent 的工具 = 读业务表的原语（db_query / db_aggregate，见 dbtools.go）+ 已连接的 MCP 工具；MCP 连上 / 断开 / 改配置时重新组装。
-	// Shuttle 不给 agent 写死业务工具：渠道、访问数据这些在运营后台的本机函数里（shuttle run channels.stats …）
+	// Shuttle 不给 agent 写死业务工具：渠道、访问数据这些在运营后台的本机函数里（annulo run channels.stats …）
 	refresh := func() { ag.SetTools(append(append(s.dbTools(), s.pageTools()...), hub.Tools()...)) }
 	hub.OnChange(refresh)
 	refresh()
+	if ws != nil && !ws.Offline && !hasToken(ws.APIHost) {
+		// 记着的是在线项目、但没连 creght：不打开（打开了大半功能都用不了，项目列表里也没有它），换到离线项目
+		ws = nil
+		s.openOfflineFallback()
+	}
 	if ws != nil {
 		s.Attach(ws)
 	}
 	return s
+}
+
+func hasToken(host string) bool {
+	_, err := creght.ReadToken(host)
+	return err == nil
+}
+
+// openOfflineFallback：没连 creght 时在线项目不打开（启动时、断开 creght 时）。换到最近新建的离线项目；
+// 一个离线项目都没有就放下当前项目，界面回到新建 / 选项目。本机的项目目录和数据都不动，重新连上 creght 后在项目列表里点它就回来了。
+func (s *Server) openOfflineFallback() {
+	var next *creght.Workspace
+	for _, b := range s.offlineBackends() {
+		if ws, err := creght.OpenWorkspaceOn(s.cfg.DirFor(b.ProjectID), s.creghtHost()); err == nil && ws.Offline {
+			next = ws
+			break
+		}
+	}
+	if next == nil {
+		s.Detach()
+		s.cfg.Backend = ""
+	} else {
+		s.Attach(next)
+		s.cfg.Backend = next.ProjectID
+	}
+	if err := s.cfg.Save(); err != nil {
+		log.Printf("保存当前项目失败：%v", err)
+	}
 }
 
 // Detach 放下当前项目（切 creght 集群时）：界面回到选项目，本机副本和对话历史都不动。
@@ -184,6 +216,14 @@ func (s *Server) ensureCreghtMCP(host string) {
 	if err := s.mcp.EnsureServer("creght", mcphub.ServerConfig{Type: "http", URL: host + "/api/mcp"}); err != nil {
 		log.Printf("添加 creght MCP 失败：%v", err)
 	}
+}
+
+// WorkspaceDir 是当前打开的项目目录；没打开项目时是空的。
+func (s *Server) WorkspaceDir() string {
+	if !s.ready.Load() {
+		return ""
+	}
+	return s.ws.Dir
 }
 
 func (s *Server) PreviewURL() string {

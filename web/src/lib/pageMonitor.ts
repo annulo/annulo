@@ -34,6 +34,8 @@ export function usePageMonitor(frame: HTMLIFrameElement | null, reload: () => vo
       post('ui/page', { load_id: loadId, path, errors }).catch(() => {})
     }
     const add = (e: PageError) => {
+      // ResizeObserver loop …：浏览器的提示（回调里改了布局，通知推迟到下一帧），页面没坏，不算报错
+      if (/^ResizeObserver loop /.test(e.message)) return
       if (errors.length >= MAX || errors.some((x) => x.message === e.message)) return
       errors.push(e)
       report()

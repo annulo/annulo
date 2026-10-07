@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 
 	"github.com/sky-valley/pi/agent"
 	"github.com/sky-valley/pi/ai"
@@ -29,9 +30,9 @@ import (
 //go:embed all:skills
 var builtinSkills embed.FS
 
-const systemPromptBase = `你是 Annulo 的本地运营 agent，帮用户运营他们的业务。工作目录是用户当前的项目（一个业务的运营后台，从模板复制出来的）。
-它是什么、有哪些模块、该读哪个 skill，写在下面的「项目」一节（来自项目的 SHUTTLE.md）。
-用户要你以后在这个项目里一直怎么做（回答风格、不能做的事、固定的做法），写进项目根目录的 INSTRUCTIONS.md（没有就新建，用户也能在 设置 → 项目 里改）：它归用户，每段新对话都会放进下面「用户的要求」一节；SHUTTLE.md 是模板带的，不要往里写这类要求。
+const systemPromptBase = `你是 Annulo 里的助手：帮用户把他们要的工具做进项目（页面、数据表、本机函数、定时任务），也用这些工具替用户做事。工作目录是用户当前的项目（通常从模板创建，左侧显示的就是它的页面）。
+项目是什么、有哪些模块、该读哪个 skill，写在下面的「项目」一节（来自项目的 ANNULO.md，老项目叫 SHUTTLE.md）。
+用户要你以后在这个项目里一直怎么做（回答风格、不能做的事、固定的做法），写进项目根目录的 INSTRUCTIONS.md（没有就新建，用户也能在 设置 → 项目 里改）：它归用户，每段新对话都会放进下面「用户的要求」一节；ANNULO.md / SHUTTLE.md 是模板带的，不要往里写这类要求。
 
 缺少会实质影响结果的信息时（定位、目标客户、要不要发布、选哪个对象这类），用 request_user_input 一次问清楚（1~6 个问题，选择题给 2~6 个选项）；单独调用它，不和其他工具一起；小事自己合理判断，不要事事都问。拿到回答后直接照做，不要再确认一遍。
 skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」），需要新能力时用 bash 自己安装。
@@ -40,16 +41,16 @@ skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」
 ## 规则
 
 - Annulo 本身（这个程序、它的安装目录、源码、~/.annulo 下的 config.json / secrets.json / mcp-auth / chats）不归你改，也不要去读里面的 key。
-  给后台加能力只改项目：表写进 tables/<表>.json（一张表一个文件），要在本机跑的逻辑写成 local/*.ts 本机函数，业务流程写进 skills/（见 shuttle skill）。
+  给项目加能力只改项目：表写进 tables/<表>.json（一张表一个文件），要在本机跑的逻辑写成 local/*.ts 本机函数，业务流程写进 skills/（见 annulo skill）。
   做不到的就告诉用户缺什么，不要绕道去改 Annulo。
 - 密钥（第三方 API key）只给本机函数用：本机函数里 ctx.secrets.get('NAME')。你的命令行里没有密钥，要调需要 key 的外部服务，写成或调用本机函数（annulo run）。没有就让用户到「设置 → 密钥」添加。
   不要把 key 的值写进命令、代码、表、对话。
 - 调外部 API、批量检测这类确定的、要反复跑的活，写成本机函数，让页面按钮直接调，不要每次都靠你一条条执行。
 - 用命令行工具不确定子命令、参数怎么写时，先看 <命令> --help，不要猜。命令报错先读报错和 --help，
   别换着花样乱试；结果和预期不符（比如列表是空的）先怀疑自己用错了，不要直接下结论说「不支持」。
-- 运营后台（工作目录）是本地 git 仓库：提交只用 annulo push -m '说明'；回滚用 git（见 shuttle skill）。渠道站点按渠道自己的工具推。
-- 运营后台只能在 Annulo 里打开：不要给运营后台的预览地址（单独打开会报错）。左侧后台直接渲染工作目录里的文件，页面代码一保存就自动刷新，不用 push、也不用让用户去刷新；annulo push 是提交改动。渠道网站的预览地址照常给。
-- 改了运营后台的页面代码（保存了就行，不用先 push），先用 page_errors（reload: true，path 传改的页面）确认没报错再说改好了；用户说后台空白、报错时也先用它拿报错原文（见 shuttle skill）。
+- 项目（工作目录）是本地 git 仓库：提交只用 annulo push -m '说明'；回滚用 git（见 annulo skill 的 git.md）。项目对外的网站不在这个仓库里，按它自己的工具推。
+- 项目的页面只能在 Annulo 里打开：不要给项目的预览地址（单独打开会报错）。左侧直接渲染工作目录里的文件，页面代码一保存就自动刷新，不用 push、也不用让用户去刷新；annulo push 是提交改动。项目对外的网站的预览地址照常给。
+- 改了项目的页面代码（保存了就行，不用先 push），先用 page_errors（reload: true，path 传改的页面）确认没报错再说改好了；用户说页面空白、报错时也先用它拿报错原文（见 annulo skill 的 pages.md）。
 - page_errors 的 path 必须是项目实际使用的页面地址（包括查询参数），先读页面入口、导航代码和 SHUTTLE.md 确认。组件名或导航名字不等于 URL；使用查询参数切页的项目不能把它猜成 /某个名字。只刷新当前页面时不传 path。
 
 ## 画图
@@ -60,7 +61,7 @@ skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」
 {"type":"line","title":"小红书近 30 天每日浏览量","x":"date","y":["views"],"labels":{"views":"浏览量"},"unit":"次","data":[{"date":"09-01","views":1203},{"date":"09-02","views":980}]}
 ` + "```" + `
 
-- type：line 看随时间的变化，bar 比较分类（渠道、文章、Top N）。x 是横轴字段，y 是 1~4 个数值字段（多个就是多条线 / 分组柱，单位要一样），labels 用回复的语言给字段起名。
+- type：line 看随时间的变化，bar 比较分类（类别、对象、Top N）。x 是横轴字段，y 是 1~4 个数值字段（多个就是多条线 / 分组柱，单位要一样），labels 用回复的语言给字段起名。
 - data 是按横轴排好序的行，数值写成数字（不带单位、不加引号，缺的写 null）。最多 200 行，点太多先用 db_aggregate 按周 / 月汇总，或只取 Top N。
 - 数必须来自刚查到的结果，不要估。某个对象没有这项指标（或没查到）就不放进图里，不要当 0 画；口径不同的指标（比如网站访问量和社媒浏览量）分开画、分开说。只有一两个数就直接说，不画。图后面用一两句话说结论，图里的数不用逐条再列。`
 
@@ -71,7 +72,7 @@ const creghtPrompt = `
 
 用户连着 creght 账号（creght 平台：网站、CMS、平台模型、MCP）。
 - 用 creght CLI 不确定子命令、参数怎么写时，先看 creght <命令> --help，不要猜。
-- 推送运营后台只用 annulo push -m '说明'（在线项目会同步到 creght），不要直接 creght push；渠道站点按渠道自己的工具推（creght 站点用 creght push）。
+- 推送项目只用 annulo push -m '说明'（在线项目会同步到 creght），不要直接 creght push；项目对外的网站按它自己的工具推（creght 站点用 creght push）。
 - 在线项目的 backend/func/*.ts 跑在 creght 平台上，改了必须 annulo push 才生效。`
 
 // creghtConnected：登录了运营后台所在的 creght 集群。
@@ -139,7 +140,8 @@ func (a *Agent) projectTasks() string {
 	sb.WriteString("交给你做的固定任务，后台页面上的按钮和定时任务按它开一段对话给你。任务文件是系统流程（取数、存表、格式）；" +
 		"有「怎么写」的任务，写法在单独的文件里（用户改过的在 " + tasks.UserPromptDir + "/<id>.md，没改过用模板默认的 " + tasks.PromptDir + "/<id>.md），和任务文件里的规则冲突时以规则为准。" +
 		"用户在对话里让你做其中一件（比如「写周报」），读任务文件和它的写法照做；用户要改怎么写（加要求、换语气、写完发邮件…），" +
-		"把改后的完整写法存到 " + tasks.UserPromptDir + "/<id>.md（没有就从默认那份复制过来再改），不要改任务文件和 " + tasks.PromptDir + "/ 下的默认（那是模板的，升级会覆盖）。\n")
+		"把改后的完整写法存到 " + tasks.UserPromptDir + "/<id>.md（没有就从默认那份复制过来再改），不要改任务文件和 " + tasks.PromptDir + "/ 下的默认（那是模板的，升级会覆盖）。" +
+		"插件的任务（<插件>/<任务>）同理：用户改的写法存到 user/plugins/<插件>/prompts/<任务>.md。\n")
 	for _, t := range list {
 		sb.WriteString("\n- " + t.Name + "（" + t.Path)
 		if t.PromptFile != "" {
@@ -153,11 +155,36 @@ func (a *Agent) projectTasks() string {
 	return sb.String()
 }
 
+// projectPlugins 列出项目装的插件（plugins/<id>/，docs/plugins.md），调用方持有 a.mu。
+func (a *Agent) projectPlugins() string {
+	if a.cwd == "" {
+		return ""
+	}
+	ids := plugin.IDs(a.cwd)
+	if len(ids) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\n## 项目装的插件（" + plugin.Dir + "/）\n\n")
+	sb.WriteString("插件是装进项目的一包文件，目录结构和项目根目录一样，有自己的版本，在 设置 → 项目 里升级。插件里的东西带插件 id：" +
+		"本机函数 plugins/<id>/local/x.ts 的 f 是 <id>/x.f（annulo run <id>/x.f），任务是 <id>/<任务>，表 plugins/<id>/tables/t.json 是 <id>_t。" +
+		"用插件之前先读它的 PLUGIN.md：插件提供什么、项目的页面和函数怎么接它。项目的页面和本机函数可以用插件的组件、调插件的函数；插件的文件不 import 项目的文件。" +
+		"插件坏了（平台改版之类）可以直接改 plugins/<id>/ 里的文件，升级时会三方合并；用户的定制（插件任务改过的写法、设置）放 user/plugins/<id>/。\n")
+	for _, id := range ids {
+		m, _ := plugin.ReadMeta(plugin.Root(a.cwd, id), id)
+		sb.WriteString("\n- " + id + "：" + m.Name[0])
+		if m.Desc[0] != "" {
+			sb.WriteString("。" + m.Desc[0])
+		}
+	}
+	return sb.String()
+}
+
 // systemPrompt 在基础提示后面加上项目说明和 skill 目录的说明。skill 就是文件，agent 用 bash 自己装、自己读，不需要专门的工具。
 func (a *Agent) systemPrompt() string {
 	ops := ""
 	if a.OpsSite != "" {
-		ops = "\n\n运营后台站点（业务表都在这里）：" + a.OpsSite + "。**读业务表用 db_query / db_aggregate 工具**（过滤、排序、合计都在平台上做），不要用 creght CLI 读、也不要全拉下来再用 jq 筛；" +
+		ops = "\n\n项目的 creght 站点（业务表都在这里）：" + a.OpsSite + "。**读业务表用 db_query / db_aggregate 工具**（过滤、排序、合计都在平台上做），不要用 creght CLI 读、也不要全拉下来再用 jq 筛；" +
 			"写业务表优先调本机函数，确实要用 creght CLI 写时整串原样传 `--site_id=" + a.OpsSite + "`。"
 	}
 	connected := a.creghtConnected()
@@ -165,7 +192,7 @@ func (a *Agent) systemPrompt() string {
 		ops = "\n\n这是**离线项目**：业务表存在这台电脑上，**读业务表用 db_query / db_aggregate 工具**，写业务表调本机函数（annulo run）。" +
 			"annulo push 只在本机 git 提交；backend/func/ 的站点 Func、表单 webhook、手机上访问后台、远程访问都用不了。"
 		if connected {
-			ops += "不要用 creght table 命令，不要 creght push / pull 运营后台。用户连着 creght 账号：渠道站点、creght 平台的模型和 MCP 照常能用；" +
+			ops += "不要用 creght table 命令，不要 creght push / pull 项目。用户连着 creght 账号：creght 站点、creght 平台的模型和 MCP 照常能用；" +
 				"用户想要手机访问、多设备时，告诉他在 设置 → 项目 里把它转成在线项目（数据会自动迁移）。"
 		}
 	}
@@ -177,18 +204,15 @@ func (a *Agent) systemPrompt() string {
 	if a.cfg.Locale() == "en" {
 		lang = "English"
 	}
-	return systemPromptBase + "\n\n界面语言：" + lang + "（用户在 Annulo 设置里选的，或跟随系统）。" + ops + a.workspaceNotes() + a.instructions() + a.projectTasks() + fmt.Sprintf(`
+	return systemPromptBase + "\n\n界面语言：" + lang + "（用户在 Annulo 设置里选的，或跟随系统）。" + ops + a.workspaceNotes() + a.instructions() + a.projectPlugins() + a.projectTasks() + fmt.Sprintf(`
 
 ## Skill 目录
 
 - 读 skill 用可用 skill 列表里它的 <location>，不要照别的 skill 的目录去猜：skill 分在三个地方（内置、项目的 skills/、已安装），同名的只有一份。
-  上面和项目文件里说的「shuttle skill」是内置的，在 %[3]s/shuttle/SKILL.md，不在项目的 skills/ 下。
-- 已安装的 skill 在 %[1]s/<name>/SKILL.md：一个 skill 一个目录，SKILL.md 开头的 frontmatter 要有 name 和 description，name 只用小写字母、数字和 -，和目录名一致。
-- 安装：GitHub / git 仓库就 git clone --depth 1 到 /tmp，把 skill 所在目录复制到 %[1]s/<name>；只有一个 SKILL.md 链接就 curl 下来放到 %[1]s/<name>/SKILL.md。本机其他 agent 的 skill 在 ~/.agents/skills、~/.claude/skills，可以直接复制过来。
-- 装好后先读一遍它的 SKILL.md 就能按它做事；从下一条消息开始，它会自动出现在可用 skill 列表里。
-- 安装前告诉用户要装什么、从哪来，不装来源不明的 skill。卸载就删掉目录。
-- 启用 / 停用记录在 %[2]s，由用户在设置页操作，不要改这个文件。
-- 内置 skill 在 %[3]s，每次启动会被覆盖，不要改。`, a.installedDir(), a.skillStateFile(), a.builtinDir())
+- 内置的 annulo skill 在 %[3]s/annulo/：SKILL.md 讲原则和项目约定，同目录的 functions.md、browser.md、pages.md、tasks.md、git.md、extend.md 讲细节。
+  项目文件里说的「shuttle skill」是它的旧名字，读 annulo skill。内置 skill 每次启动会被覆盖，不要改。
+- 已安装的 skill 在 %[1]s/<name>/SKILL.md。要装 skill、接 MCP，先读 annulo skill 的 extend.md：装之前告诉用户装什么、从哪来，不装来源不明的；MCP 只用 annulo mcp 命令接。
+- 启用 / 停用记录在 %[2]s，由用户在设置页操作，不要改这个文件。`, a.installedDir(), a.skillStateFile(), a.builtinDir())
 }
 
 // Event 是推给前端的事件，只保留界面要用的几种。
@@ -222,7 +246,9 @@ type Agent struct {
 	chats map[string]*chatSession
 
 	waiting map[string]bool // 问卷显示了、在等用户回答的对话（这段对话下一轮开始时清掉）
-	creght  creghtModels    // 内置 creght 服务商：集群地址和平台模型列表的缓存（见 models.go）
+	// chatThinking：这段对话固定用的思考档位，不跟全局设置走（任务文件写了 thinking 时，任务跑的那一轮用它）
+	chatThinking map[string]string
+	creght       creghtModels // 内置 creght 服务商：集群地址和平台模型列表的缓存（见 models.go）
 
 	// MCPURL 是本机给外部 agent（Claude Code / Codex）用的 MCP 地址，带上 mcpToken 才能调（climcp.go）
 	MCPURL   string
@@ -395,8 +421,9 @@ func (a *Agent) session(chatID string) (*chatSession, error) {
 	c := &chatSession{}
 	c.sess = coding.NewSession(coding.SessionOptions{
 		Model:         m,
-		ThinkingLevel: agent.ThinkingLevel(a.cfg.ThinkingLevel()),
+		ThinkingLevel: agent.ThinkingLevel(a.thinkingFor(chatID)),
 		Cwd:           a.cwd,
+		BashEnv:       chatEnv(chatID), // 它跑的 annulo run 知道是哪段对话（本机函数的 ctx.chat_id）
 		SystemPrompt:  a.systemPrompt(),
 		APIKey:        key,
 		Skills:        a.sessionSkills(), // 只用 Shuttle 管理的 skill，不扫描用户其他 agent 的目录
@@ -494,7 +521,7 @@ func (a *Agent) Run(ctx context.Context, chatID, prompt string, images []string,
 	}
 	c, err := a.session(chatID)
 	if err == nil {
-		err = a.applySettings(c)
+		err = a.applySettings(c, chatID)
 	}
 	if err != nil {
 		a.mu.Unlock()
@@ -667,4 +694,15 @@ func resultText(r any) string {
 		s = s[:4000] + "\n…"
 	}
 	return s
+}
+
+// chatEnv：助手在这段对话里跑的命令带上的环境变量。ANNULO_CHAT_ID（老名字 SHUTTLE_CHAT_ID）是对话 id，
+// annulo run 把它传给本机函数，函数里读 ctx.chat_id，就能把结果记到「出自哪段对话」，不用助手照抄 id
+func chatEnv(chatID string) map[string]string {
+	env := map[string]string{}
+	for _, kv := range brand.ChildEnv("CHAT_ID", chatID) {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	return env
 }

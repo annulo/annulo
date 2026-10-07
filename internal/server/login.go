@@ -41,11 +41,18 @@ func (s *Server) creghtHost() string {
 	return creght.NormHost(s.cfg.Creght)
 }
 
-// apiCreghtClusterGet：能选的集群和现在用的。
+// apiCreghtClusterGet：能选的集群和现在用的（Hidden 的集群只在正在用时列出）。
 func (s *Server) apiCreghtClusterGet(w http.ResponseWriter, r *http.Request) {
-	list := make([]map[string]any, len(creght.Clusters))
+	cur := s.loginHost()
+	var shown []creght.Cluster
+	for _, c := range creght.Clusters {
+		if !c.Hidden || c.Host == cur {
+			shown = append(shown, c)
+		}
+	}
+	list := make([]map[string]any, len(shown))
 	var wg sync.WaitGroup
-	for i, c := range creght.Clusters {
+	for i, c := range shown {
 		wg.Add(1)
 		go func() { // 各集群的模板列表一起读，一个连不上不拖着别的
 			defer wg.Done()
@@ -54,7 +61,7 @@ func (s *Server) apiCreghtClusterGet(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	wg.Wait()
-	writeJSON(w, map[string]any{"current": s.loginHost(), "clusters": list})
+	writeJSON(w, map[string]any{"current": cur, "clusters": list})
 }
 
 // apiCreghtClusterSet：{"host":…} 换 creght 集群。账号、项目、模板都是按集群分开的：
@@ -215,5 +222,10 @@ func (s *Server) apiLogout(w http.ResponseWriter, r *http.Request) {
 	s.user.mu.Unlock()
 	s.relay.Reconnect() // 断开了：中转也断开
 	resetTemplateCache()
-	writeJSON(w, map[string]any{"ok": true})
+	// 当前是在线项目：没连 creght 就用不了，换到离线项目（见 openOfflineFallback）。switched 让界面整页刷新
+	switched := s.ready.Load() && !s.ws.Offline
+	if switched {
+		s.openOfflineFallback()
+	}
+	writeJSON(w, map[string]any{"ok": true, "switched": switched})
 }

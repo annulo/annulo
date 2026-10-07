@@ -60,7 +60,7 @@ func Start(webDir string) (*Instance, error) {
 	if webDir != "" {
 		web = os.DirFS(webDir)
 	}
-	// agent 的 bash 里要能直接用 shuttle 命令（skill 会调 shuttle run），把它所在目录放到 PATH 最前面（creght 命令行不再随安装包带，用户自己装的照常在 PATH 里）：
+	// agent 的 bash 里要能直接用 annulo 命令（skill 会调 annulo run），把它所在目录放到 PATH 最前面（creght 命令行不再随安装包带，用户自己装的照常在 PATH 里）：
 	// CLI 就是自己所在目录；Mac App 里在 Contents/Resources/bin
 	if exe, err := os.Executable(); err == nil {
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
@@ -90,9 +90,12 @@ func Start(webDir string) (*Instance, error) {
 	}
 	fmt.Printf("  ✓ Annulo %s\n", version.Version)
 	fmt.Printf("    运营后台  %s\n", inst.URL)
-	if ws != nil {
-		fmt.Printf("    站点预览  %s\n", srv.PreviewURL())
-		fmt.Printf("    工作目录  %s\n", ws.Dir)
+	// 用服务端最后打开的项目：记着的在线项目没连 creght 时不会打开（server.New 换到离线项目）
+	if dir := srv.WorkspaceDir(); dir != "" {
+		if p := srv.PreviewURL(); p != "" {
+			fmt.Printf("    站点预览  %s\n", p)
+		}
+		fmt.Printf("    工作目录  %s\n", dir)
 	} else {
 		fmt.Printf("    还没有运营后台：打开上面的地址，按提示登录和初始化\n")
 	}

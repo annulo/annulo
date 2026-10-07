@@ -17,6 +17,8 @@ const DefaultHost = "https://creght.cn"
 type Cluster struct {
 	Host string
 	name [2]string // 中文、英文
+	// Hidden：不在区域列表里给人选（2026-10-06 起 talizen.com 不再列出）；已经选了它的照常用，正在用时列表里仍显示
+	Hidden bool
 }
 
 func (c Cluster) Name() string { return i18n.T(c.name[0], c.name[1]) }
@@ -24,7 +26,7 @@ func (c Cluster) Name() string { return i18n.T(c.name[0], c.name[1]) }
 var Clusters = []Cluster{
 	{Host: "https://creght.cn", name: [2]string{"creght.cn（中国）", "creght.cn (China)"}},
 	{Host: "https://creght.com", name: [2]string{"creght.com（国际）", "creght.com (International)"}},
-	{Host: "https://talizen.com", name: [2]string{"talizen.com", "talizen.com"}},
+	{Host: "https://talizen.com", name: [2]string{"talizen.com", "talizen.com"}, Hidden: true},
 }
 
 // ClusterOf 按地址找集群（地址大小写、结尾斜杠不影响）；不是已知集群返回 nil。

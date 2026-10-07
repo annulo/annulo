@@ -19,7 +19,7 @@ import (
 // 既是心跳，也从这里领「刷新 / 切到某个页面」的指令。
 //
 // 助手通过 page_errors 工具主动来查，不自动塞进对话：两个人同时在改后台时，一个人改到一半的报错
-// 不该推给另一个不知情的人，否则两边会互相乱改。什么时候查、查到别人的错怎么办写在 shuttle skill 里。
+// 不该推给另一个不知情的人，否则两边会互相乱改。什么时候查、查到别人的错怎么办写在内置 annulo skill 的 pages.md 里。
 
 const (
 	pageAliveWithin = 8 * time.Second // 外壳多久没来问就当作窗口没开
@@ -108,8 +108,8 @@ func (s *Server) pageTools() []piagent.AgentTool {
 	return []piagent.AgentTool{{
 		Name:  "page_errors",
 		Label: "查后台页面报错",
-		Description: "查左侧运营后台页面在浏览器里运行时的报错（渲染错误、未捕获的异常，带调用栈）。curl 拿不到这些：页面返回 200 也可能白屏。" +
-			"改完后台页面、推送之后用它确认（reload: true，path 传改的页面）；用户说后台空白、报错时先用它拿报错原文。" +
+		Description: "查左侧项目页面在浏览器里运行时的报错（渲染错误、未捕获的异常，带调用栈）。curl 拿不到这些：页面返回 200 也可能白屏。" +
+			"改完项目页面后用它确认（reload: true，path 传改的页面）；用户说页面空白、报错时先用它拿报错原文。" +
 			"返回 { open, page, loaded_at, errors }；open 为 false 说明用户没开着 Annulo 的窗口，查不到。",
 		Parameters: mustSchema(pageErrorsSchema),
 		Execute: func(ctx context.Context, _ string, p map[string]any, _ piagent.ToolUpdateFunc) (piagent.AgentToolResult, error) {

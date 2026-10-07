@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -308,4 +309,38 @@ func localized(raw json.RawMessage) [2]string {
 		en = zh
 	}
 	return [2]string{zh, en}
+}
+
+// CatalogDirs 列出一个仓库最新一版（semver tag）里有 marker 文件的一级子目录：仓库里放了多个模板（或插件）时，
+// 每个子目录就是一个（github.com/annulo/templates 的 blank/、creator/；annulo/plugins 的 social/）。
+// t.Site 写仓库本身（git:<仓库>，不带子目录）；markers 任一个在子目录里就算（annulo.json 或老的 shuttle.json）。
+func CatalogDirs(ctx context.Context, t Template, markers ...string) ([]string, error) {
+	repo, _ := ParseGitSite(t.Site)
+	dir, err := mirror(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	tags, err := gitTags(ctx, repo, dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(tags) == 0 {
+		return nil, i18n.Errorf("仓库 %s 还没有发过版本（vX.Y.Z 的 tag）", "Repository %s has no versions yet (vX.Y.Z tags)", repo)
+	}
+	out, err := gitRun(ctx, repo, "--git-dir="+dir, "ls-tree", "-r", "--name-only", "refs/tags/"+tags[0].name+"^{commit}")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var dirs []string
+	for _, p := range strings.Split(string(out), "\n") {
+		d, f, ok := strings.Cut(p, "/")
+		if !ok || strings.Contains(f, "/") || seen[d] || !slices.Contains(markers, f) {
+			continue
+		}
+		seen[d] = true
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	return dirs, nil
 }

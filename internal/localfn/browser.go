@@ -391,8 +391,10 @@ func (r *runner) uploadFiles(v goja.Value) []string {
 				out = append(out, full)
 				continue
 			}
-			if !strings.HasPrefix(x, "http://") && !strings.HasPrefix(x, "https://") {
-				r.throw(i18n.Errorf("upload 只能用图片 / 视频地址（http / https）、本机文件（local:…）或 screenshot 返回的 { file }：%q", "upload only accepts image / video URLs (http / https), local files (local:…) or the { file } returned by screenshot: %q", x))
+			// 离线项目上传的文件地址是 /_annulo/uploaded/…（不带主机，交给 Download / Fetch 直接读本机文件）
+			uploaded := strings.HasPrefix(x, "/_annulo/uploaded/") || strings.HasPrefix(x, "/_shuttle/uploaded/")
+			if !uploaded && !strings.HasPrefix(x, "http://") && !strings.HasPrefix(x, "https://") {
+				r.throw(i18n.Errorf("upload 只能用图片 / 视频地址（http / https，或本机上传的 /_annulo/uploaded/…）、本机文件（local:…）或 screenshot 返回的 { file }：%q", "upload only accepts image / video URLs (http / https, or /_annulo/uploaded/… uploaded on this computer), local files (local:…) or the { file } returned by screenshot: %q", x))
 			}
 			if r.h.Download != nil {
 				// 流式下载到临时文件（视频可能几百 MB）；先存成 .bin，拿到 content-type 再改成对的扩展名（网站按扩展名认格式）

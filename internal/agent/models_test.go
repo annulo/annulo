@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +91,7 @@ func TestCreghtModelApis(t *testing.T) {
 	}
 }
 
-// 关掉服务商：它的模型不出现，当前模型在里面就换成别的；关完就没模型可用时不让关；再打开就回来
+// 关掉服务商：它的模型不出现，当前模型在里面就换成别的；全关了也能关；再打开就回来
 func TestDisableProvider(t *testing.T) {
 	a := &Agent{cfg: &config.Config{Dir: t.TempDir(),
 		Providers: []config.Provider{{ID: "p1", Name: "mine"}},
@@ -114,10 +115,16 @@ func TestDisableProvider(t *testing.T) {
 	if err := a.SetActiveModel(creghtPrefix + "luna"); err == nil {
 		t.Error("关掉的服务商的模型不能选")
 	}
-	// 再关 p1 就没模型可用了（本机装了 claude / codex 时还有它们的，这一步跳过）
+	// 再关 p1 就没模型可用了：照样能关（不用 AI 是正常用法），助手说没有能用的模型（本机装了 claude / codex 时还有它们的，这一步跳过）
 	if len(cliModels()) == 0 {
-		if err := a.SetProviderEnabled("p1", false); err == nil || !has("m1") {
-			t.Fatalf("全关了应该拒绝，且不改配置：%v", err)
+		if err := a.SetProviderEnabled("p1", false); err != nil || has("m1") {
+			t.Fatalf("全关了也要能关：%v", err)
+		}
+		if _, err := a.LLM(); err == nil {
+			t.Error("全关了以后应该报没有能用的模型")
+		}
+		if err := a.SetProviderEnabled("p1", true); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err := a.SetProviderEnabled("nope", false); err == nil {
@@ -126,5 +133,21 @@ func TestDisableProvider(t *testing.T) {
 	// 重新打开：模型回来，之前选的 luna（配置里没动）又是当前模型
 	if err := a.SetProviderEnabled(config.CreghtProvider, true); err != nil || !has(creghtPrefix+"luna") || a.ModelSettings().Active != creghtPrefix+"luna" {
 		t.Fatalf("重新打开：%v active=%s", err, a.ModelSettings().Active)
+	}
+}
+
+// 同一个服务商下不能加两个一样的模型 id；别的服务商下可以，改自己不算重复
+func TestSaveModelDuplicate(t *testing.T) {
+	a := &Agent{cfg: &config.Config{Dir: t.TempDir(),
+		Providers: []config.Provider{{ID: "p1", Name: "sub"}, {ID: "p2", Name: "other"}},
+		Models:    []config.LLM{{ID: "m1", Provider: "p1", Model: "deepseek-chat"}}}}
+	if _, err := a.SaveModel(config.LLM{Provider: "p1", Model: "deepseek-chat"}); err == nil || !strings.Contains(err.Error(), "sub") {
+		t.Fatalf("重复应该报错：%v", err)
+	}
+	if _, err := a.SaveModel(config.LLM{Provider: "p2", Model: "deepseek-chat"}); err != nil {
+		t.Fatalf("别的服务商下可以：%v", err)
+	}
+	if _, err := a.SaveModel(config.LLM{ID: "m1", Provider: "p1", Model: "deepseek-chat", Name: "改名"}); err != nil {
+		t.Fatalf("改自己不算重复：%v", err)
 	}
 }

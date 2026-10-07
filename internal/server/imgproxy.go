@@ -53,6 +53,13 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	raw := r.URL.Query().Get("url")
+	// 离线项目上传的文件存在本机（/_annulo/uploaded/…，老数据是带端口的完整地址）：出网规则不让访问本机，直接读文件
+	if p := s.localAssetFile(raw); p != "" {
+		w.Header().Set("x-content-type-options", "nosniff")
+		w.Header().Set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		http.ServeFile(w, r, p)
+		return
+	}
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		http.Error(w, i18n.T("url 要是 http / https 的图片地址", "url must be an http / https image URL"), http.StatusBadRequest)

@@ -83,7 +83,7 @@ func InitOffline(dir string, v Version, site string) error {
 	return err
 }
 
-// CommitOffline 是离线项目的 shuttle push：只提交到本机 git，没有 creght 可推。
+// CommitOffline 是离线项目的 annulo push：只提交到本机 git，没有 creght 可推。
 func CommitOffline(dir, msg string, log io.Writer) error {
 	if err := Ensure(dir); err != nil {
 		return err

@@ -53,7 +53,7 @@ func (s *Server) dbTools() []piagent.AgentTool {
 		{
 			Name:  "db_query",
 			Label: "查业务表",
-			Description: "查运营后台的业务表（tables/ 里声明的）。已知记录 id 用 where: { id: \"…\" }，读取系统主键；filter 的 id eq 也支持。其他过滤、排序在平台上做。" +
+			Description: "查项目的业务表（tables/ 里声明的）。已知记录 id 用 where: { id: \"…\" }，读取系统主键；filter 的 id eq 也支持。其他过滤、排序在平台上做。" +
 				"找「最高 / 最近 / 某段时间内」的记录用 filter + order_by + limit，不要全拉下来自己筛。只要合计、分组统计用 db_aggregate。" +
 				"返回 { list, has_more, next_cursor }；has_more 为 true 说明还有没返回的行。只读，写表走本机函数。",
 			Parameters: mustSchema(dbQuerySchema),
@@ -69,7 +69,7 @@ func (s *Server) dbTools() []piagent.AgentTool {
 			Name:  "db_aggregate",
 			Label: "统计业务表",
 			Description: "在平台上对业务表分组汇总（count / sum / avg / min / max / first / last），行再多也不用拉回来。" +
-				"按天 / 按月合计、算某段时间涨了多少、每个渠道多少条，用它。返回 { list, truncated }。",
+				"按天 / 按月合计、算某段时间涨了多少、每个类别多少条，用它。返回 { list, truncated }。",
 			Parameters: mustSchema(dbAggregateSchema),
 			Execute: func(ctx context.Context, _ string, p map[string]any, _ piagent.ToolUpdateFunc) (piagent.AgentToolResult, error) {
 				out, err := s.dbToolAggregate(ctx, p)

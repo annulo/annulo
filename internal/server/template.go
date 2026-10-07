@@ -206,6 +206,7 @@ func (s *Server) apiTemplateRestore(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"commit": sha, "files": in.Files}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	s.installTemplatePlugins(ctx, s.ws.Dir, *t, 0) // 接着升级到最新版：合并之前先装上它要的插件
 	res, err := wsgit.Upgrade(ctx, s.ws.Dir, *t, 0)
 	if err != nil {
 		out["upgrade_error"] = err.Error() // 恢复已经做了，只是没升到最新（比如 Shuttle 太旧）
@@ -213,6 +214,9 @@ func (s *Server) apiTemplateRestore(w http.ResponseWriter, r *http.Request) {
 		out["result"] = res
 	}
 	if res == nil || res.Status != "conflict" {
+		if res != nil && res.Status == "merged" {
+			out["plugins"] = s.installProjectPlugins(ctx, s.ws.Dir) // 合并前没装上的再试一次
+		}
 		pushAfterMerge(ctx, s.ws.Dir, out)
 	}
 	writeJSON(w, out)
@@ -244,11 +248,12 @@ func (s *Server) apiTemplateRestoreUndo(w http.ResponseWriter, r *http.Request) 
 // apiTemplateUpgrade：{"to":版本号，0 是最新}。合并干净就推到预览；有冲突返回冲突文件，界面交给助手解决。
 func (s *Server) apiTemplateUpgrade(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		To int `json:"to"`
+		To     int    `json:"to"`
+		ChatID string `json:"chat_id"` // 助手在对话里用 annulo template upgrade 升级：它自己那段对话在跑不算忙
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 4<<10))
 	json.Unmarshal(b, &in)
-	if s.agent.Busy() {
+	if busyExcept(s.agent.RunningChats(), in.ChatID) {
 		fail(w, http.StatusConflict, i18n.New("运营助手正在执行，等它做完再升级模板", "The assistant is working; wait until it finishes before upgrading the template"))
 		return
 	}
@@ -263,16 +268,28 @@ func (s *Server) apiTemplateUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	installed := s.installTemplatePlugins(ctx, s.ws.Dir, *t, in.To) // 合并之前装：有冲突时合并停在进行中就装不了了
 	res, err := wsgit.Upgrade(ctx, s.ws.Dir, *t, in.To)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)
 		return
 	}
-	out := map[string]any{"result": res}
+	out := map[string]any{"result": res, "plugins": installed}
 	if res.Status == "merged" {
+		out["plugins"] = append(installed, s.installProjectPlugins(ctx, s.ws.Dir)...) // 合并前没装上的再试一次
 		pushAfterMerge(ctx, s.ws.Dir, out)
 	}
 	writeJSON(w, out)
+}
+
+// busyExcept：除了 self 这段对话，还有别的对话在跑（它们可能正在改项目文件，这时合并模板会撞上）。
+func busyExcept(running []string, self string) bool {
+	for _, id := range running {
+		if self == "" || id != self {
+			return true
+		}
+	}
+	return false
 }
 
 // apiTemplateSwitch：把项目换成另一个模板 {"template": "trade", "project_id"?: 不传是当前项目}。
@@ -313,6 +330,7 @@ func (s *Server) apiTemplateSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	installed := s.installTemplatePlugins(ctx, dir, to.wsgit(s.cfg.Dir), 0) // 合并之前装，理由同升级
 	res, err := wsgit.Switch(ctx, dir, *from, to.wsgit(s.cfg.Dir), 0)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)
@@ -323,7 +341,9 @@ func (s *Server) apiTemplateSwitch(w http.ResponseWriter, r *http.Request) {
 	if err := creght.NewClient(s.loginHost()).SetFromProject(ctx, id, to.ProjectID); err != nil {
 		out["record_error"] = err.Error()
 	}
+	out["plugins"] = installed
 	if res.Status == "merged" {
+		out["plugins"] = append(installed, s.installProjectPlugins(ctx, dir)...)
 		pushAfterMerge(ctx, dir, out)
 	}
 	writeJSON(w, out)

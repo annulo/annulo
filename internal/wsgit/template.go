@@ -76,6 +76,18 @@ func VersionMinAPI(ctx context.Context, t Template, n int) (int, error) {
 }
 
 // cachedVersion 是快照目录现在是模板的第几版（creght pull --version_no 记在 .creght/state.json 的 snapshot 里）。
+// VersionDir 把模板第 n 版拉到 t.Cache（已经是那一版就不拉），返回这个目录：合并之前先看新版本里写了什么（比如要哪些插件）。
+func VersionDir(ctx context.Context, t Template, n int) (string, error) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	if cachedVersion(t.Cache) != n {
+		if err := pullVersion(ctx, t, n); err != nil {
+			return "", err
+		}
+	}
+	return t.Cache, nil
+}
+
 func cachedVersion(dir string) int {
 	b, err := os.ReadFile(filepath.Join(dir, ".creght", "state.json"))
 	if err != nil {
@@ -162,7 +174,7 @@ type UpgradeResult struct {
 }
 
 // Upgrade 把项目升级到模板的 to 版本（0 表示最新）。调用方保证这时没有别人在改工作目录（助手没在跑）。
-// 有冲突时合并停在进行中：文件里是冲突标记，解决后提交（每轮自动提交或 shuttle push）就完成合并；
+// 有冲突时合并停在进行中：文件里是冲突标记，解决后提交（每轮自动提交或 annulo push）就完成合并；
 // 冲突没解决前 Commit / Push 都会拒绝，不会把冲突标记提交或推上去。
 func Upgrade(ctx context.Context, dir string, t Template, to int) (*UpgradeResult, error) {
 	if err := Ensure(dir); err != nil {
@@ -450,7 +462,9 @@ func snapshotTree(ctx context.Context, dir string, t Template, n int) (string, e
 	os.Remove(idx)
 	defer os.Remove(idx)
 	env := []string{"GIT_INDEX_FILE=" + idx}
-	if _, err := gitEnv(dir, env, "--work-tree="+t.Cache, "add", "-A", "--", ".", ":(exclude).creght", ":(exclude).git", ":(exclude)AGENTS.md"); err != nil {
+	// --force：缓存里就是模板这一版的全部文件，模板自己带的 .gitignore 管的是用它建出来的项目，不该挡住模板文件；
+	// 而且排除的 .creght、AGENTS.md 正好被它忽略时，不加 -f 的 git add 会直接报错退出
+	if _, err := gitEnv(dir, env, "--work-tree="+t.Cache, "add", "-A", "--force", "--", ".", ":(exclude).creght", ":(exclude).git", ":(exclude)AGENTS.md"); err != nil {
 		return "", err
 	}
 	tree, err := gitEnv(dir, env, "write-tree")

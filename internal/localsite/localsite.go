@@ -83,8 +83,8 @@ type errorItem struct {
 	Detail  string `json:"detail,omitempty"`
 }
 
-// 不是页面代码的目录：本机函数、表、任务、说明文档……里面的文件只有被页面 import 了才算页面源码
-var nonPageDirs = []string{"local", "tables", "schedules", "tasks", "prompts", "skills", "docs", "backend", "user", "types", "node_modules"}
+// 不是页面代码的目录：本机函数、表、任务、说明文档、插件……里面的文件只有被页面 import 了才算页面源码
+var nonPageDirs = []string{"local", "tables", "schedules", "tasks", "prompts", "skills", "docs", "backend", "user", "types", "node_modules", "plugins"}
 
 // New：dir 是项目目录，cacheDir 放编译缓存和平台配置的缓存（~/.shuttle/render）。
 // apiHost 是取渲染配置的 creght 集群，空就不连 creght、用随安装包带的那份，包从 cdn 加载（空是 DefaultCDN）。

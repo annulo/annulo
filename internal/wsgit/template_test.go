@@ -339,3 +339,29 @@ func TestMinAPIBothKeys(t *testing.T) {
 		t.Fatalf("两个文件都有取大的：%d", ProjectMinAPI(dir))
 	}
 }
+
+// 模板自己带的 .gitignore 忽略了 .creght / AGENTS.md（自媒体模板 v0.5.x）：取模板快照不能因此报错，也不能把它们带进去
+func TestSnapshotTreeTemplateGitignore(t *testing.T) {
+	dir := t.TempDir()
+	if err := Ensure(dir); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(t.TempDir(), "cache")
+	for name, body := range map[string]string{
+		".gitignore":         ".creght/\nAGENTS.md\n",
+		"pages/index.tsx":    "page",
+		"AGENTS.md":          "local notes",
+		".creght/state.json": `{"snapshot":{"version_no":3}}`,
+	} {
+		os.MkdirAll(filepath.Dir(filepath.Join(cache, name)), 0o755)
+		os.WriteFile(filepath.Join(cache, name), []byte(body), 0o644)
+	}
+	tree, err := snapshotTree(context.Background(), dir, Template{Cache: cache}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := git(dir, "ls-tree", "-r", "--name-only", tree)
+	if got := strings.Fields(out); strings.Join(got, ",") != ".gitignore,pages/index.tsx" {
+		t.Fatalf("快照里的文件不对：%v", got)
+	}
+}

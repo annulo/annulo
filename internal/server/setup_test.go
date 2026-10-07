@@ -26,10 +26,10 @@ func stubTemplates(t *testing.T, list map[string][]creght.OpsTemplate) {
 	for _, h := range []string{"https://creght.cn", "https://creght.com"} {
 		creght.StoreToken(h, "tok", time.Now().Add(time.Hour))
 	}
-	oldGit := defaultTemplateSources
-	defaultTemplateSources = nil // 只看 creght 的模板，不连 GitHub
+	oldGit := templateCatalog
+	templateCatalog = nil // 只看 creght 的模板，不连 GitHub
 	t.Cleanup(func() {
-		defaultTemplateSources = oldGit
+		templateCatalog = oldGit
 		fetchOpsTemplates = old
 		tplCache.Lock()
 		tplCache.m = nil

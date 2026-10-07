@@ -26,7 +26,7 @@ const dayWeek = (d: string) => {
   return getLocale() === 'en' ? `${EN_MONTHS[m - 1]} ${day} · ${EN_WEEK[w]}` : `${m}月${day}日 周${WEEK[w]}`
 }
 
-/** 用量：本机记录的模型 token 消耗 */
+/** 用量：本机记录的模型 token 消耗（设置里的一节，标题和说明由设置页出） */
 export default function UsagePage() {
   const [days, setDays] = useState('30')
   const [rep, setRep] = useState<UsageReport | null>(null)
@@ -42,13 +42,9 @@ export default function UsagePage() {
   }, [days])
 
   return (
-    <div className="scroll-thin h-full overflow-y-auto bg-muted/40 p-6">
-      <div className="mx-auto w-full max-w-[1200px]">
-        <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold tracking-tight">{t('用量')}</h3>
-            <p className="text-sm text-muted-foreground">{t('agent 每次调用模型的 token 消耗，只记录在这台电脑的 ~/.annulo/usage.jsonl。')}</p>
-          </div>
+    <div>
+      <div>
+        <div className="mb-4 flex justify-end">
           <RangeToggle
             value={days}
             onChange={setDays}
@@ -81,8 +77,8 @@ export default function UsagePage() {
             <Section title={t('最近一年')} aside={<span className="text-xs text-muted-foreground">{t('每格一天，颜色越深 token 越多')}</span>}>
               <Heatmap data={rep.heatmap} />
             </Section>
-            <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-              <Section title="模型">
+            <div className="grid gap-6">
+              <Section title={t('模型')}>
                 <Models rep={rep} />
               </Section>
               <Section title={t('活跃时段')} aside={<span className="text-xs text-muted-foreground">{t('按小时')}</span>}>
@@ -313,7 +309,7 @@ function Models({ rep }: { rep: UsageReport }) {
     <div className="overflow-x-auto rounded-lg border border-border">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+          <tr className="border-b border-border bg-muted/40 text-left text-xs whitespace-nowrap text-muted-foreground">
             <th className="px-3 py-2 font-medium">{t('模型')}</th>
             <th className="w-20 px-3 py-2 text-right font-medium">{t('请求')}</th>
             <th className="w-20 px-3 py-2 text-right font-medium">{t('输入')}</th>
@@ -326,7 +322,7 @@ function Models({ rep }: { rep: UsageReport }) {
           {rep.models.map((m) => (
             <tr key={m.model} className="border-b border-border last:border-b-0">
               <td className="px-3 py-2">
-                <div className="font-mono text-[13px]">{m.model}</div>
+                <div className="font-mono text-[13px] whitespace-nowrap">{m.model}</div>
                 <div className="mt-1.5 h-1 rounded-full bg-muted">
                   <div className="h-full rounded-full bg-primary" style={{ width: `${(m.total / max) * 100}%` }} />
                 </div>

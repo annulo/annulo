@@ -36,3 +36,12 @@ func TestShuttleSkillOverride(t *testing.T) {
 		t.Fatalf("directory export failed: skills=%v diagnostics=%v", loaded, diagnostics)
 	}
 }
+
+// BashEnv（Shuttle 补丁）：宿主给的环境变量合进每条 bash 命令的环境
+func TestShuttleBashEnv(t *testing.T) {
+	empty := []Skill{}
+	sess := NewSession(SessionOptions{Cwd: t.TempDir(), NoTools: NoToolsAll, Skills: &empty, BashEnv: map[string]string{"ANNULO_CHAT_ID": "c1"}})
+	if got := sess.bashSessionEnv()["ANNULO_CHAT_ID"]; got != "c1" {
+		t.Fatalf("ANNULO_CHAT_ID = %q", got)
+	}
+}

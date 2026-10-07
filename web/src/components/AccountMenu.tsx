@@ -35,8 +35,10 @@ export function AccountMenu({ user, host, onLoggedOut }: { user: User; host: str
     setBusy(true)
     setErr('')
     try {
-      await post('login/logout')
-      onLoggedOut()
+      const r = await post('login/logout')
+      // 当前是在线项目：服务端换到了离线项目（或回到选项目），后台页面、标签都是旧项目的，整页刷新
+      if (((await r.json()) as { switched?: boolean }).switched) location.reload()
+      else onLoggedOut()
     } catch (e) {
       setErr((e as Error).message)
     } finally {

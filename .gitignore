@@ -11,3 +11,4 @@
 /shuttle
 /windows/rsrc_windows_*.syso
 /.secrets/
+__pycache__/

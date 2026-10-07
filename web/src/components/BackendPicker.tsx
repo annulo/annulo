@@ -34,7 +34,8 @@ const fmtDate = (s: string) => {
 }
 
 /** 项目：账号下已有的（切过去 / 改名）或者从模板新建。初始化页和设置页共用。 */
-export default function BackendPicker({ onDone }: { onDone: () => void }) {
+// inline：新建项目直接在当前页面里填，不弹窗（初始化页面用）；设置里的项目列表仍是弹窗
+export default function BackendPicker({ onDone, inline = false }: { onDone: () => void; inline?: boolean }) {
   const [st, setSt] = useState<SetupState | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -118,174 +119,9 @@ export default function BackendPicker({ onDone }: { onDone: () => void }) {
   const templates = st.templates
   const tpl = templates.find((x) => x.key === tplKey) ?? templates[0]
   const stepText = offlineNew ? t('正在新建…') : st.step === 'pulling' ? t('正在拉取到本地…') : t('正在复制模板…')
-  return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-xs font-semibold text-muted-foreground">{t('你的项目')}</div>
-          {st.backends.length > 0 && (
-            <Button size="sm" variant="outline" onClick={() => setCreating(true)} className="gap-1">
-              <Plus className="size-3.5" />
-              {t('新建项目')}
-            </Button>
-          )}
-        </div>
-        {st.backends.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border bg-background px-4 py-8 text-center">
-            <p className="text-xs text-muted-foreground">{t('还没有项目，从模板新建一个。')}</p>
-            <Button size="sm" onClick={() => setCreating(true)} className="gap-1">
-              <Plus className="size-3.5" />
-              {t('新建项目')}
-            </Button>
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-xl border border-border bg-background">
-            {st.backends.map((b) => (
-              <div key={b.project_id} className="border-b border-border last:border-b-0">
-              <div className="flex items-center gap-3 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  {editing?.id === b.project_id ? (
-                    <form
-                      className="flex items-center gap-1.5"
-                      onSubmit={(e) => {
-                        e.preventDefault()
-                        rename()
-                      }}
-                    >
-                      <Input
-                        autoFocus
-                        value={editing.name}
-                        maxLength={40}
-                        onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                        onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}
-                        aria-label={t('项目名字')}
-                        className="h-8 max-w-64 text-[13px]"
-                      />
-                      <Button type="submit" size="sm" disabled={!editing.name.trim() || busy === 'rename:' + b.project_id}>
-                        {busy === 'rename:' + b.project_id && <Loader className="animate-spin" />}
-                        {t('保存')}
-                      </Button>
-                      <Button type="button" variant="ghost" size="icon-sm" onClick={() => setEditing(null)} aria-label={t('取消改名')}>
-                        <X />
-                      </Button>
-                    </form>
-                  ) : (
-                    <div className="group flex items-center gap-2">
-                      <span className="truncate text-[13px] font-bold">{b.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => setEditing({ id: b.project_id, name: b.name })}
-                        aria-label={t('给 {name} 改名', { name: b.name })}
-                        title={t('改名')}
-                        className="rounded p-0.5 text-muted-foreground opacity-0 outline-none group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                      >
-                        <Pencil className="size-3" />
-                      </button>
-                      {b.current && <span className="rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary-text">{t('正在使用')}</span>}
-                    </div>
-                  )}
-                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                    {b.offline ? (
-                      <span className="rounded bg-muted px-1.5 py-px font-semibold" title={t('离线项目：数据只在这台电脑上')}>
-                        {t('离线')}
-                      </span>
-                    ) : (
-                      <span className="rounded bg-muted px-1.5 py-px font-semibold" title={t('在线项目：数据在 creght 上（{id}）', { id: b.project_id })}>
-                        Creght
-                      </span>
-                    )}
-                    <span>{fmtDate(b.created_at)}</span>
-                    {b.local && !b.offline && (
-                      <span className="inline-flex items-center gap-1">
-                        <HardDrive className="size-3" /> {t('本机已有')}
-                      </span>
-                    )}
-                    <TemplateTag b={b} />
-                  </div>
-                </div>
-                {b.current ? (
-                  <Check className="size-4 text-primary-text" />
-                ) : (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      disabled={!!busy}
-                      onClick={() => setDeleting(deleting?.id === b.project_id ? null : { id: b.project_id, typed: '' })}
-                      aria-label={t('删除 {label}', { label: b.name })}
-                      title={t('删除项目')}
-                      className="text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 />
-                    </Button>
-                    <Button variant="outline" size="sm" disabled={!!busy} onClick={() => run({ action: 'use', project_id: b.project_id }, b.project_id)}>
-                      {busy === b.project_id && <Loader className="animate-spin" />}
-                      {busy === b.project_id ? (st.step === 'pulling' ? t('拉取中…') : t('准备中…')) : t('切换')}
-                    </Button>
-                  </>
-                )}
-              </div>
-              {deleting?.id === b.project_id && (
-                <form
-                  className="space-y-2 border-t border-border bg-destructive/5 px-4 py-3"
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    remove(b)
-                  }}
-                >
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {b.offline ? t('离线项目只在这台电脑上：项目文件、业务数据和对话历史会挪到') : t('会删除 creght 上的这个项目：后台页面、业务数据、CMS 都没法恢复。本机的副本和对话历史会挪到')} <code className="font-mono">~/.annulo/trash</code>{t('。输入项目名「')}
-                    <span className="font-semibold text-foreground">{b.name}</span>{t('」确认：')}
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      autoFocus
-                      value={deleting.typed}
-                      onChange={(e) => setDeleting({ ...deleting, typed: e.target.value })}
-                      onKeyDown={(e) => e.key === 'Escape' && setDeleting(null)}
-                      aria-label={t('输入项目名确认删除')}
-                      className="h-8 max-w-64 text-[13px]"
-                    />
-                    <Button type="submit" variant="destructive" size="sm" disabled={deleting.typed.trim() !== b.name || busy === 'delete:' + b.project_id}>
-                      {busy === 'delete:' + b.project_id && <Loader className="animate-spin" />}
-                      {t('删除')}
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setDeleting(null)}>
-                      {t('取消')}
-                    </Button>
-                  </div>
-                </form>
-              )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {creating && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
-          onMouseDown={(e) => e.target === e.currentTarget && busy !== 'new' && setCreating(false)}
-        >
-          {/* Esc 只关这个弹窗，不往外传（外面的设置弹窗也听 Esc） */}
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={t('新建项目')}
-            onKeyDown={(e) => {
-              if (e.key !== 'Escape') return
-              e.stopPropagation()
-              if (busy !== 'new') setCreating(false)
-            }}
-            className="flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl"
-          >
-            <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-              <span className="text-sm font-bold">{t('新建项目')}</span>
-              <Button variant="ghost" size="icon-sm" disabled={busy === 'new'} onClick={() => setCreating(false)} aria-label={t('关闭')} className="rounded-lg text-muted-foreground hover:text-foreground">
-                <X className="size-[18px]" />
-              </Button>
-            </div>
-          <div className="overflow-y-auto p-5">
+  // 新建项目的表单：弹窗里和 inline 共用
+  const createBody = (
+    <>
             {!tpl && <p className="text-xs text-muted-foreground">{offlineNew ? t('没有可用的模板。') : t('这个 creght 区域还没有模板，新建项目要先换到 creght.cn（设置 → creght 区域）。')}</p>}
             {tpl && (
             <>
@@ -435,7 +271,7 @@ export default function BackendPicker({ onDone }: { onDone: () => void }) {
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder={t('起个名字，比如品牌名或业务线')}
                 aria-label={t('新项目的名字')}
-                className="h-8 max-w-72 text-[13px]"
+                className="h-8 flex-1 text-[13px]"
               />
               <Button type="submit" size="sm" disabled={!!busy || !newName.trim()} className={cn(busy === 'new' && 'min-w-28')}>
                 {busy === 'new' && <Loader className="animate-spin" />}
@@ -464,6 +300,191 @@ export default function BackendPicker({ onDone }: { onDone: () => void }) {
             )}
             </>
             )}
+    </>
+  )
+  return (
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-muted-foreground">{inline && st.backends.length === 0 ? t('新建项目') : t('你的项目')}</div>
+          {st.backends.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setCreating(true)} className="gap-1">
+              <Plus className="size-3.5" />
+              {t('新建项目')}
+            </Button>
+          )}
+        </div>
+        {st.backends.length === 0 && inline ? (
+          <div className="rounded-xl border border-border bg-background p-5">{createBody}</div>
+        ) : st.backends.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border bg-background px-4 py-8 text-center">
+            <p className="text-xs text-muted-foreground">{t('还没有项目，从模板新建一个。')}</p>
+            <Button size="sm" onClick={() => setCreating(true)} className="gap-1">
+              <Plus className="size-3.5" />
+              {t('新建项目')}
+            </Button>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-border bg-background">
+            {st.backends.map((b) => (
+              <div key={b.project_id} className="border-b border-border last:border-b-0">
+              <div className="flex items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  {editing?.id === b.project_id ? (
+                    <form
+                      className="flex items-center gap-1.5"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        rename()
+                      }}
+                    >
+                      <Input
+                        autoFocus
+                        value={editing.name}
+                        maxLength={40}
+                        onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                        onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}
+                        aria-label={t('项目名字')}
+                        className="h-8 max-w-64 text-[13px]"
+                      />
+                      <Button type="submit" size="sm" disabled={!editing.name.trim() || busy === 'rename:' + b.project_id}>
+                        {busy === 'rename:' + b.project_id && <Loader className="animate-spin" />}
+                        {t('保存')}
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon-sm" onClick={() => setEditing(null)} aria-label={t('取消改名')}>
+                        <X />
+                      </Button>
+                    </form>
+                  ) : (
+                    <div className="group flex items-center gap-2">
+                      <span className="truncate text-[13px] font-bold">{b.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditing({ id: b.project_id, name: b.name })}
+                        aria-label={t('给 {name} 改名', { name: b.name })}
+                        title={t('改名')}
+                        className="rounded p-0.5 text-muted-foreground opacity-0 outline-none group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                      >
+                        <Pencil className="size-3" />
+                      </button>
+                      {b.current && <span className="rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary-text">{t('正在使用')}</span>}
+                    </div>
+                  )}
+                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                    {b.offline ? (
+                      <span className="rounded bg-muted px-1.5 py-px font-semibold" title={t('离线项目：数据只在这台电脑上')}>
+                        {t('离线')}
+                      </span>
+                    ) : (
+                      <span className="rounded bg-muted px-1.5 py-px font-semibold" title={t('在线项目：数据在 creght 上（{id}）', { id: b.project_id })}>
+                        Creght
+                      </span>
+                    )}
+                    <span>{fmtDate(b.created_at)}</span>
+                    {b.local && !b.offline && (
+                      <span className="inline-flex items-center gap-1">
+                        <HardDrive className="size-3" /> {t('本机已有')}
+                      </span>
+                    )}
+                    <TemplateTag b={b} />
+                  </div>
+                </div>
+                {b.current ? (
+                  <Check className="size-4 text-primary-text" />
+                ) : (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={!!busy}
+                      onClick={() => setDeleting(deleting?.id === b.project_id ? null : { id: b.project_id, typed: '' })}
+                      aria-label={t('删除 {label}', { label: b.name })}
+                      title={t('删除项目')}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2 />
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={!!busy} onClick={() => run({ action: 'use', project_id: b.project_id }, b.project_id)}>
+                      {busy === b.project_id && <Loader className="animate-spin" />}
+                      {busy === b.project_id ? (st.step === 'pulling' ? t('拉取中…') : t('准备中…')) : t('切换')}
+                    </Button>
+                  </>
+                )}
+              </div>
+              {deleting?.id === b.project_id && (
+                <form
+                  className="space-y-2 border-t border-border bg-destructive/5 px-4 py-3"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    remove(b)
+                  }}
+                >
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {b.offline ? t('离线项目只在这台电脑上：项目文件、业务数据和对话历史会挪到') : t('会删除 creght 上的这个项目：后台页面、业务数据、CMS 都没法恢复。本机的副本和对话历史会挪到')} <code className="font-mono">~/.annulo/trash</code>{t('。输入项目名「')}
+                    <span className="font-semibold text-foreground">{b.name}</span>{t('」确认：')}
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      autoFocus
+                      value={deleting.typed}
+                      onChange={(e) => setDeleting({ ...deleting, typed: e.target.value })}
+                      onKeyDown={(e) => e.key === 'Escape' && setDeleting(null)}
+                      aria-label={t('输入项目名确认删除')}
+                      className="h-8 max-w-64 text-[13px]"
+                    />
+                    <Button type="submit" variant="destructive" size="sm" disabled={deleting.typed.trim() !== b.name || busy === 'delete:' + b.project_id}>
+                      {busy === 'delete:' + b.project_id && <Loader className="animate-spin" />}
+                      {t('删除')}
+                    </Button>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setDeleting(null)}>
+                      {t('取消')}
+                    </Button>
+                  </div>
+                </form>
+              )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {creating && inline && st.backends.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-border bg-background">
+          <div className="flex h-11 items-center justify-between border-b border-border px-4">
+            <span className="text-[13px] font-bold">{t('新建项目')}</span>
+            <Button variant="ghost" size="icon-sm" disabled={busy === 'new'} onClick={() => setCreating(false)} aria-label={t('关闭')} className="rounded-lg text-muted-foreground hover:text-foreground">
+              <X className="size-4" />
+            </Button>
+          </div>
+          <div className="p-5">{createBody}</div>
+        </div>
+      )}
+
+      {creating && !inline && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
+          onMouseDown={(e) => e.target === e.currentTarget && busy !== 'new' && setCreating(false)}
+        >
+          {/* Esc 只关这个弹窗，不往外传（外面的设置弹窗也听 Esc） */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('新建项目')}
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return
+              e.stopPropagation()
+              if (busy !== 'new') setCreating(false)
+            }}
+            className="flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl"
+          >
+            <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+              <span className="text-sm font-bold">{t('新建项目')}</span>
+              <Button variant="ghost" size="icon-sm" disabled={busy === 'new'} onClick={() => setCreating(false)} aria-label={t('关闭')} className="rounded-lg text-muted-foreground hover:text-foreground">
+                <X className="size-[18px]" />
+              </Button>
+            </div>
+          <div className="overflow-y-auto p-5">
+            {createBody}
             {error && <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm break-all text-destructive">{error}</div>}
           </div>
           </div>
@@ -471,13 +492,6 @@ export default function BackendPicker({ onDone }: { onDone: () => void }) {
       )}
 
       {(error || st.error) && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm break-all text-destructive">{error || st.error}</div>}
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        {st.logged_in
-          ? t('在线项目对应你 creght 账号下的一个项目，离线项目只在这台电脑上；数据、后台页面和对话历史互相隔离，模型、Skill、MCP 所有项目共用。本地副本放在')
-          : t('项目之间的数据、后台页面和对话历史互相隔离，模型、Skill、MCP 所有项目共用。项目放在')}{' '}
-        <code className="font-mono">{st.dir}</code>
-        {t('。')}
-      </p>
     </div>
   )
 }

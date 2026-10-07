@@ -9,6 +9,7 @@ import (
 
 	"github.com/annulo/annulo/internal/agent"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 	"github.com/annulo/annulo/internal/tasks"
 )
 
@@ -118,12 +119,13 @@ func (s *Server) relayAI(ctx context.Context, projectID, fn string, input any) (
 			return nil, err
 		}
 		start := time.Now()
-		chatID := fmt.Sprintf("task-%s-%d", t.ID, start.UnixMilli())
+		chatID := fmt.Sprintf("task-%s-%d", plugin.ChatKey(t.ID), start.UnixMilli())
 		run, err := s.claimTask(t, in["input"], chatID, false, start)
 		if err != nil {
 			return nil, err
 		}
-		go s.finishTask(t, run, "")
+		// startTask 在这里同步跑完（go 语句先在当前 goroutine 求出函数值），存好对话再返回 chat_id；返回的函数才放到后台
+		go s.startTask(t, run, "")()
 		return map[string]any{"chat_id": chatID}, nil
 	}
 	return nil, i18n.Errorf("没有这个函数：%s", "No such function: %s", fn)

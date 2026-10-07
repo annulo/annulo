@@ -209,9 +209,14 @@ func (s *Server) apiOfflineMode(w http.ResponseWriter, r *http.Request) {
 
 const assetsURL = "/_shuttle/uploaded/"
 
+// uploadedURL：新上传的文件给出去的地址前缀（新名字；进来时 canonicalPaths 换回 assetsURL）
+const uploadedURL = brand.URLPrefixNew + "uploaded/"
+
 func (s *Server) assetsDir() string { return filepath.Join(s.cfg.Dir, "assets") }
 
-// saveOfflineAsset 按内容哈希存进 ~/.shuttle/assets，返回和 creght 素材上传一样的结果，地址是本机的 /_shuttle/uploaded/<文件>。
+// saveOfflineAsset 按内容哈希存进 ~/.shuttle/assets，返回和 creght 素材上传一样的结果。
+// 地址是不带主机和端口的 /_annulo/uploaded/<文件>：端口会变（7799 被占时换端口），存进表、正文的地址不能带它；
+// 页面和 Annulo 同源，<img src> 直接能用。老数据里的 http://127.0.0.1:端口/_shuttle/uploaded/… 照样认（localAssetRe）。
 func (s *Server) saveOfflineAsset(name, ctype string, b []byte) (*creght.Asset, error) {
 	sum := sha256.Sum256(b)
 	ext := strings.ToLower(filepath.Ext(name))
@@ -236,7 +241,8 @@ func (s *Server) saveOfflineAsset(name, ctype string, b []byte) (*creght.Asset, 
 			return nil, err
 		}
 	}
-	return &creght.Asset{URL: "http://" + s.cfg.Addr() + assetsURL + file, Path: assetsURL + file, Size: len(b), ContentType: ctype, Existed: existed}, nil
+	ref := uploadedURL + file
+	return &creght.Asset{URL: ref, Path: ref, Size: len(b), ContentType: ctype, Existed: existed}, nil
 }
 
 var assetNameRe = regexp.MustCompile(`^[0-9a-f]{32}(\.[a-z0-9]{1,8})?$`)
@@ -252,9 +258,9 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.assetsDir(), name))
 }
 
-// localAssetFile：本机函数下载 / 请求的是本机存的上传文件（http://127.0.0.1:端口/_shuttle/uploaded/…）时，直接读文件
+// localAssetFile：本机函数下载 / 请求的、b.upload 传的是本机存的上传文件时，直接读文件
 // （出网规则不许访问本机，平常这类地址会被拦下）。不是返回 ""。
-// 端口不限：地址存进数据时的端口，和现在监听的可能不一样（7799 被占时会换端口）。
+// 认的写法见 localAssetRe：现在给出去的 /_annulo/uploaded/…，和老数据里带端口的完整地址（端口不限）。
 func (s *Server) localAssetFile(rawURL string) string {
 	if m := localAssetRe.FindStringSubmatch(rawURL); m != nil && m[0] == rawURL {
 		return filepath.Join(s.assetsDir(), m[1])
@@ -264,7 +270,8 @@ func (s *Server) localAssetFile(rawURL string) string {
 
 // ---- 离线项目转成在线项目 ----
 
-var localAssetRe = regexp.MustCompile(`https?://(?:127\.0\.0\.1|localhost):\d+/_shuttle/uploaded/([0-9a-f]{32}(?:\.[a-z0-9]{1,8})?)`)
+// localAssetRe：本机上传文件的地址。主机和端口可有可无（老数据存的是完整地址），前缀新旧名字都认。
+var localAssetRe = regexp.MustCompile(`(?:https?://(?:127\.0\.0\.1|localhost):\d+)?/_(?:shuttle|annulo)/uploaded/([0-9a-f]{32}(?:\.[a-z0-9]{1,8})?)`)
 
 // apiGoOnline：POST setup/online：把当前的离线项目转成 creght 上的在线项目。
 //  1. 从项目的模板复制一个 creght 项目（拿到项目和站点），拉一份它的 .creght；
@@ -287,15 +294,17 @@ func (s *Server) apiGoOnline(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	ws, steps, err := s.goOnline(ctx, host)
+	var failed []assetFailure
+	ws, steps, err := s.goOnline(ctx, host, &failed)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "project_id": ws.ProjectID, "log": steps})
+	writeJSON(w, map[string]any{"ok": true, "project_id": ws.ProjectID, "log": steps, "assets_failed": failed})
 }
 
-func (s *Server) goOnline(ctx context.Context, host string) (*creght.Workspace, []string, error) {
+// failed 收集没传上去的本机文件（转换照常完成，回报给用户重新上传）。
+func (s *Server) goOnline(ctx context.Context, host string, failed *[]assetFailure) (*creght.Workspace, []string, error) {
 	old := s.ws
 	var steps []string
 	step := func(f string, args ...any) {
@@ -360,11 +369,15 @@ func (s *Server) goOnline(ctx context.Context, host string) (*creght.Workspace, 
 		}
 	}
 	if s.localData != nil {
-		n, err := s.migrateRows(ctx, cl, pid, sid, defs)
+		n, bad, err := s.migrateRows(ctx, cl, pid, sid, defs)
 		if err != nil {
 			return cleanup(err)
 		}
 		step("迁移了 %d 条数据", n)
+		if len(bad) > 0 {
+			step("%d 个本机文件没传上去", len(bad))
+			*failed = bad
+		}
 	}
 
 	// 3. 挪目录，换上 .creght，推文件
@@ -388,7 +401,7 @@ func (s *Server) goOnline(ctx context.Context, host string) (*creght.Workspace, 
 	ensureIgnore(filepath.Join(newDir, ".creghtignore"), "AGENTS.md")
 	var pushLog bytes.Buffer
 	if err := wsgit.PushNew(ctx, newDir, &pushLog); err != nil {
-		step("推送文件失败（在 设置 → 项目 里重试推送，或让助手 shuttle push）：%v", err)
+		step("推送文件失败（在 设置 → 项目 里重试推送，或让助手 annulo push）：%v", err)
 	} else {
 		step("项目文件已经推到 creght")
 	}
@@ -428,16 +441,16 @@ func (s *Server) goOnline(ctx context.Context, host string) (*creght.Workspace, 
 }
 
 // migrateRows 把本机 SQLite 里的行写进 creght 项目的表：先原样写一遍拿到新 id，再把行里引用旧 id、本机文件地址的地方换掉。
-func (s *Server) migrateRows(ctx context.Context, cl *creght.Client, pid, sid string, defs []tableDef) (int, error) {
+func (s *Server) migrateRows(ctx context.Context, cl *creght.Client, pid, sid string, defs []tableDef) (n int, failed []assetFailure, err error) {
 	tables, err := s.localData.Tables()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	tids := map[string]string{}
 	for _, d := range defs {
 		id, err := cl.TableID(ctx, pid, d.Key)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		tids[d.Key] = id
 	}
@@ -452,37 +465,30 @@ func (s *Server) migrateRows(ctx context.Context, cl *creght.Client, pid, sid st
 		}
 		recs, err := s.localData.ListRecords(ctx, "", t, creght.RecordQuery{})
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		for _, r := range recs {
 			id, err := cl.CreateRecord(ctx, pid, tid, json.RawMessage(r.Body))
 			if err != nil {
-				return 0, i18n.Errorf("迁移 %s 的数据失败：%w", "Failed to migrate data in %s: %w", t, err)
+				return 0, nil, i18n.Errorf("迁移 %s 的数据失败：%w", "Failed to migrate data in %s: %w", t, err)
 			}
 			pairs = append(pairs, r.ID, id)
 			all = append(all, moved{t, tid, id, string(r.Body)})
 		}
 	}
 	// 本机上传的文件：传到 creght 素材，地址换成线上的
-	uploaded := map[string]string{}
-	for _, m := range all {
-		for _, g := range localAssetRe.FindAllStringSubmatch(m.body, -1) {
-			if _, ok := uploaded[g[0]]; ok {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(s.assetsDir(), g[1]))
-			if err != nil {
-				continue
-			}
-			a, err := cl.UploadAsset(ctx, pid, sid, g[1], mime.TypeByExtension(filepath.Ext(g[1])), b)
-			if err != nil {
-				log.Printf("转在线：上传 %s 失败：%v", g[1], err)
-				continue
-			}
-			uploaded[g[0]] = a.URL
-			pairs = append(pairs, g[0], a.URL)
-		}
+	bodies := make([][2]string, len(all))
+	for i, m := range all {
+		bodies[i] = [2]string{m.table, m.body}
 	}
+	assetPairs, failed := s.uploadLocalAssets(bodies, func(name string, b []byte) (string, error) {
+		a, err := cl.UploadAsset(ctx, pid, sid, name, mime.TypeByExtension(filepath.Ext(name)), b)
+		if err != nil {
+			return "", err
+		}
+		return a.URL, nil
+	})
+	pairs = append(pairs, assetPairs...)
 	rep := strings.NewReplacer(pairs...)
 	for _, m := range all {
 		nb := rep.Replace(m.body)
@@ -490,10 +496,50 @@ func (s *Server) migrateRows(ctx context.Context, cl *creght.Client, pid, sid st
 			continue
 		}
 		if err := cl.UpdateRecord(ctx, pid, m.tid, m.id, json.RawMessage(nb)); err != nil {
-			return 0, i18n.Errorf("更新 %s 里的引用失败：%w", "Failed to update references in %s: %w", m.table, err)
+			return 0, nil, i18n.Errorf("更新 %s 里的引用失败：%w", "Failed to update references in %s: %w", m.table, err)
 		}
 	}
-	return len(all), nil
+	return len(all), failed, nil
+}
+
+// uploadLocalAssets 找出各行（表名、内容）里引用的本机上传文件，逐个 upload（同一个文件只传一次，新旧几种写法都换），
+// 返回给 strings.NewReplacer 的「旧地址、新地址」。找不到文件、传失败的地址不换，列进 failed（一个文件一条）。
+func (s *Server) uploadLocalAssets(bodies [][2]string, upload func(name string, b []byte) (string, error)) (pairs []string, failed []assetFailure) {
+	done := map[string]bool{}     // 处理过的地址
+	online := map[string]string{} // 文件名 → 线上地址（失败的是 ""）
+	for _, tb := range bodies {
+		for _, g := range localAssetRe.FindAllStringSubmatch(tb[1], -1) {
+			if done[g[0]] {
+				continue
+			}
+			done[g[0]] = true
+			u, ok := online[g[1]]
+			if !ok {
+				b, err := os.ReadFile(filepath.Join(s.assetsDir(), g[1]))
+				if err != nil {
+					err = i18n.New("这台电脑上找不到这个文件了", "The file is no longer on this computer")
+				} else {
+					u, err = upload(g[1], b)
+				}
+				if err != nil {
+					log.Printf("转在线：上传 %s 失败：%v", g[1], err)
+					failed = append(failed, assetFailure{Table: tb[0], Ref: g[0], Error: err.Error()})
+				}
+				online[g[1]] = u
+			}
+			if u != "" {
+				pairs = append(pairs, g[0], u)
+			}
+		}
+	}
+	return pairs, failed
+}
+
+// assetFailure：转在线时没传上去的本机文件（文件找不到了、上传失败），数据里还是本机地址，用户要重新上传
+type assetFailure struct {
+	Table string `json:"table"`
+	Ref   string `json:"ref"`
+	Error string `json:"error"`
 }
 
 func ensureIgnore(file, line string) {

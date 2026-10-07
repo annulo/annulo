@@ -49,7 +49,7 @@ func gitEnv(dir string, env []string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// Lock 用 .git/shuttle.lock 串行化 Git 操作：shuttle push（CLI 进程）和每轮自动提交（服务进程）会同时碰一个仓库。
+// Lock 用 .git/shuttle.lock 串行化 Git 操作：annulo push（CLI 进程）和每轮自动提交（服务进程）会同时碰一个仓库。
 func Lock(dir string) (unlock func(), err error) {
 	f, err := os.OpenFile(filepath.Join(dir, ".git", "shuttle.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -106,7 +106,7 @@ func excludeCloud(dir string) error {
 	if len(b) > 0 && !bytes.HasSuffix(b, []byte("\n")) {
 		b = append(b, '\n')
 	}
-	b = append(b, []byte("# shuttle push 生成的本机函数云端版本，不进 git\n"+line+"\n")...)
+	b = append(b, []byte("# annulo push 生成的本机函数云端版本，不进 git\n"+line+"\n")...)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -138,7 +138,8 @@ func commit(dir, msg string) (bool, error) {
 	if _, err := git(dir, "add", "-A"); err != nil {
 		return false, err
 	}
-	if out, err := git(dir, "status", "--porcelain"); err != nil || (strings.TrimSpace(out) == "" && !merging) {
+	// 看暂存区，不看 status：有的改动 add 不进去（macOS 上只差大小写的两个文件，status 一直显示改了），照样算没有要提交的
+	if out, err := git(dir, "diff", "--cached", "--name-only"); err != nil || (strings.TrimSpace(out) == "" && !merging) {
 		return false, err
 	}
 	if _, err := git(dir, "commit", "-q", "--no-verify", "-m", msg); err != nil {
@@ -169,7 +170,7 @@ var ErrConflict = i18n.New("合并远端改动有冲突", "Merging remote change
 type PushConflict struct{ Files []string }
 
 func (e *PushConflict) Error() string {
-	return i18n.Tf("%s，这些文件里有冲突标记（<<<<<<< local / >>>>>>> remote）：%s。改好后重新 shuttle push", "%s; these files have conflict markers (<<<<<<< local / >>>>>>> remote): %s. Fix them, then run shuttle push again", ErrConflict.Error(), strings.Join(e.Files, ", "))
+	return i18n.Tf("%s，这些文件里有冲突标记（<<<<<<< local / >>>>>>> remote）：%s。改好后重新 annulo push", "%s; these files have conflict markers (<<<<<<< local / >>>>>>> remote): %s. Fix them, then run annulo push again", ErrConflict.Error(), strings.Join(e.Files, ", "))
 }
 
 func (e *PushConflict) Unwrap() error { return ErrConflict }

@@ -28,7 +28,7 @@ func defaultAssistant() assistantInfo {
 		Suggestions: []string{
 			i18n.T("这个项目现在有什么？", "What's in this project right now?"),
 			i18n.T("做一个记录客户跟进的页面，能按状态筛选", "Make a page for tracking customer follow-ups, filterable by status"),
-			i18n.T("每天早上 9 点抓取几个网站的标题，存进表里", "Every morning at 9, fetch the headlines of a few sites and save them to a table"),
+			i18n.T("每天早上 9 点，检查几个网站的 SSL 证书到期时间", "Every morning at 9, check when the SSL certificates of a few sites expire"),
 		},
 	}
 }

@@ -56,7 +56,12 @@ func testServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// needChrome：真的开一个 Chrome（headless 在 macOS 上也会闪一下屏幕），默认跳过；
+// 改了浏览器相关的代码时用 ANNULO_TEST_BROWSER=1 go test ./internal/browser/ 跑
 func needChrome(t *testing.T) {
+	if os.Getenv("ANNULO_TEST_BROWSER") == "" {
+		t.Skip("要开真的 Chrome，默认跳过：ANNULO_TEST_BROWSER=1 才跑")
+	}
 	if FindChrome() == "" {
 		t.Skip("本机没有 Chrome / Edge")
 	}

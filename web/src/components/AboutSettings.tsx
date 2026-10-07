@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, Check, Loader, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getJSON, type Status } from '@/lib/api'
@@ -28,6 +28,18 @@ export default function AboutSettings() {
       setChecking(false)
     }
   }
+  // 打开「关于」自动查一次：有新版本就在下面显示（不弹窗，弹窗只在手动点「检查更新」时开）
+  const auto = useRef(false)
+  useEffect(() => {
+    if (!update.available || auto.current) return
+    auto.current = true
+    setChecking(true)
+    update
+      .check()
+      .then(() => setChecked(true))
+      .catch(() => {})
+      .finally(() => setChecking(false))
+  }, [update.available]) // eslint-disable-line react-hooks/exhaustive-deps
   const pct = s?.bytes ? Math.round(((s.received ?? 0) / s.bytes) * 100) : 0
 
   return (

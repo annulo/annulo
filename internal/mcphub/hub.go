@@ -32,6 +32,7 @@ import (
 
 	"github.com/annulo/annulo/internal/config"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localcmd"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	piagent "github.com/sky-valley/pi/agent"
@@ -345,9 +346,16 @@ func (h *Hub) dial(ctx context.Context, s *server) (*mcp.ClientSession, []*mcp.T
 		for i, a := range c.Args {
 			args[i] = expand(a)
 		}
-		cmd := exec.Command(expand(c.Command), args...)
+		// 从 Finder 打开的 App 只有系统 PATH：npx、uvx 这类按登录 shell 的 PATH 找，跑的时候也用这份 PATH（npx 要找 node）
+		bin := expand(c.Command)
+		if !strings.ContainsAny(bin, `/\`) {
+			if p := localcmd.Find(bin); p != "" {
+				bin = p
+			}
+		}
+		cmd := exec.Command(bin, args...)
 		// 本地 MCP 是用户自己配的工具：带上设置里的密钥（助手的命令行里没有）
-		cmd.Env = append(os.Environ(), config.All()...)
+		cmd.Env = append(localcmd.Env(), config.All()...)
 		for k, v := range c.Env {
 			cmd.Env = append(cmd.Env, k+"="+expand(v))
 		}

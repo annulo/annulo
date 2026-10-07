@@ -218,3 +218,42 @@ func TestPushConflict(t *testing.T) {
 		t.Fatal("冲突标记不该被提交")
 	}
 }
+
+// macOS 默认不区分大小写：git 里同时有 pages/index.tsx 和 pages/Index.tsx 时，磁盘上只放得下一个，
+// status 一直显示另一个改了、add 又加不进去。这时提交应该当成没有改动，不能报 git commit 失败（模板升级前要先提交）
+func TestCommitCaseOnlyDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "probe"), nil, 0o644)
+	if _, err := os.Stat(filepath.Join(dir, "PROBE")); err != nil {
+		t.Skip("文件系统区分大小写，不会出现这种情况")
+	}
+	os.Remove(filepath.Join(dir, "probe"))
+	if err := Ensure(dir); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(dir, "pages"), 0o755)
+	os.WriteFile(filepath.Join(dir, "pages", "index.tsx"), []byte("new"), 0o644)
+	if _, err := Commit(dir, "页面"); err != nil {
+		t.Fatal(err)
+	}
+	// 用底层命令塞进一个只差大小写、内容不同的 pages/Index.tsx（老项目从别的模板改过来时就是这样）
+	cmd := exec.Command("git", "-C", dir, "hash-object", "-w", "--stdin")
+	cmd.Stdin = strings.NewReader("old")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(dir, "update-index", "--add", "--cacheinfo", "100644,"+strings.TrimSpace(string(out))+",pages/Index.tsx"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(dir, "commit", "-q", "-m", "两个只差大小写的文件"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := git(dir, "status", "--porcelain"); !strings.Contains(st, "Index.tsx") {
+		t.Fatalf("应该显示 Index.tsx 改了：%q", st)
+	}
+	ok, err := Commit(dir, "升级前的改动")
+	if err != nil || ok {
+		t.Fatalf("只差大小写的文件不该让提交失败：ok=%v err=%v", ok, err)
+	}
+}

@@ -71,6 +71,11 @@ type SessionOptions struct {
 	// Parse skill directories with LoadSkillsFromDir.
 	Skills *[]Skill
 
+	// BashEnv (Shuttle patch) is extra environment for every bash command the
+	// session runs, merged over the PI_* session metadata. The host uses it to
+	// tell commands which conversation they belong to.
+	BashEnv map[string]string
+
 	// Models, when set, is the model runtime used to resolve request auth for
 	// summarization requests (pi AgentSession's _modelRuntime). It is needed
 	// only for providers that carry their endpoint in the credential rather
@@ -302,6 +307,7 @@ type Session struct {
 	Recorder *SessionRecorder
 	apiKey   string
 	models   ai.Models
+	bashEnv  map[string]string // SessionOptions.BashEnv (Shuttle patch)
 	// recMu guards Recorder against the tool-execution goroutine reading it for
 	// bash session metadata while Record attaches one.
 	recMu sync.RWMutex
@@ -350,6 +356,9 @@ func (s *Session) bashSessionEnv() map[string]string {
 	// disabled reasoning level is still reported.
 	if level := st.ThinkingLevel; level != "" {
 		env["PI_REASONING_LEVEL"] = string(level)
+	}
+	for k, v := range s.bashEnv { // Shuttle patch: host-provided variables
+		env[k] = v
 	}
 	return env
 }
@@ -490,7 +499,7 @@ func NewSession(opts SessionOptions) *Session {
 	// reads them off the live ExtensionContext per call). The Session is
 	// allocated up front so the closure captures a stable, non-nil pointer; its
 	// Agent is filled in below, before NewSession returns and any tool can run.
-	sess := &Session{Cwd: cwd, Model: opts.Model, apiKey: opts.APIKey, models: opts.Models}
+	sess := &Session{Cwd: cwd, Model: opts.Model, apiKey: opts.APIKey, models: opts.Models, bashEnv: opts.BashEnv}
 	tools := resolveTools(cwd, opts, sess.bashSessionEnv, sess.imageResizeOptions)
 	// A custom SystemPrompt still goes through the prompt builder with discovery:
 	// pi adds project context files, skills and cwd to custom prompts too; only

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/plugin"
 	"github.com/annulo/annulo/internal/tasks"
 	"github.com/annulo/annulo/internal/wsgit"
 )
@@ -61,12 +62,12 @@ func (s *Server) syncTaskState() {
 	}
 }
 
-func taskNote(name, chatID string, scheduled bool) string {
+func taskNote(name string, scheduled bool) string {
 	if scheduled {
-		return fmt.Sprintf(scheduledNote(), name, chatID)
+		return fmt.Sprintf(scheduledNote(), name)
 	}
-	return fmt.Sprintf(i18n.T("（这是运营后台里的任务「%s」，用户在页面上点按钮发起的，这段对话的 id 是 %s（要记下结果出自哪段对话时用它）。它在后台跑，用户不一定在看：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
-		"(This is the project task \"%s\", started by the user from a button in the ops backend; its chat id is %s — use it when recording which chat produced a result. It runs in the background and the user may not be watching: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n"), name, chatID)
+	return fmt.Sprintf(i18n.T("（这是项目里的任务「%s」，用户在页面上点按钮发起的。它在后台跑，用户不一定在看：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
+		"(This is the project task \"%s\", started by the user from a button on a project page. It runs in the background and the user may not be watching: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n"), name)
 }
 
 // claimTask 占住「这个任务、这组参数」：同样的正在跑就报错。
@@ -99,20 +100,36 @@ func (s *Server) execTask(id string, input any, chatID, fallbackName string, sch
 	if err != nil {
 		return "", err
 	}
-	return s.finishTask(t, r, fallbackName)
+	return s.startTask(t, r, fallbackName)()
 }
 
-func (s *Server) finishTask(t *tasks.Task, r *taskRun, fallbackName string) (string, error) {
+// startTask 先把任务的对话存好（返回 chat_id 前页面就可能去打开它），返回跑完任务、记下结果的函数（调用方放到后台）。
+func (s *Server) startTask(t *tasks.Task, r *taskRun, fallbackName string) func() (string, error) {
 	name := t.Name
 	if name == t.ID && fallbackName != "" {
 		name = fallbackName
 	}
-	prompt := taskNote(name, r.ChatID, r.Scheduled) + taskPrompt(t, r.Input)
+	prompt := taskNote(name, r.Scheduled) + taskPrompt(t, r.Input)
 	title := i18n.T("任务：", "Task: ") + name
 	if r.Scheduled {
 		title = i18n.T("定时：", "Scheduled: ") + name
 	}
-	answer, err := s.runBackgroundChat(r.ChatID, title, prompt, r.StartedAt)
+	if t.Thinking != "" {
+		s.agent.SetChatThinking(r.ChatID, t.Thinking) // 任务固定的思考档位，只管任务跑的这一轮
+	}
+	exec, err := s.beginBackgroundChat(r.ChatID, title, prompt, r.StartedAt)
+	return func() (string, error) {
+		answer := ""
+		if err == nil {
+			answer, err = exec()
+		}
+		s.agent.SetChatThinking(r.ChatID, "") // 跑完了：用户接着聊就按自己的设置
+		return s.recordTask(t, r, answer, err)
+	}
+}
+
+// recordTask 记下任务这一次的结果，从正在跑的里去掉。
+func (s *Server) recordTask(t *tasks.Task, r *taskRun, answer string, err error) (string, error) {
 	r.Ms, r.OK, r.Result = time.Since(r.StartedAt).Milliseconds(), err == nil, truncateRunes(answer, 500)
 	if err != nil {
 		r.Error = err.Error()
@@ -188,7 +205,7 @@ func (s *Server) apiTasks(w http.ResponseWriter, r *http.Request, rest string) {
 		writeJSON(w, map[string]any{"list": out})
 		return
 	}
-	id, action, _ := strings.Cut(rest, "/")
+	id, action := splitNameAction(s.ws.Dir, rest)
 	t, err := tasks.Load(s.ws.Dir, id)
 	if err != nil {
 		fail(w, http.StatusNotFound, err)
@@ -211,7 +228,7 @@ func (s *Server) apiTasks(w http.ResponseWriter, r *http.Request, rest string) {
 		if in.Prompt != nil || in.ResetPrompt {
 			// 用户的「怎么写」：可以清空（留一个空文件，页面上仍然能再写）
 			var err error
-			msg := "修改任务的写法（user/prompts/" + t.ID + ".md）"
+			msg := "修改任务的写法（" + tasks.UserPromptRel(t.ID) + "）"
 			switch {
 			case in.ResetPrompt:
 				err, msg = t.ResetPrompt(), "任务的写法恢复默认（"+t.ID+"）"
@@ -262,13 +279,14 @@ func (s *Server) apiTasks(w http.ResponseWriter, r *http.Request, rest string) {
 			}
 		}
 		start := time.Now()
-		chatID := fmt.Sprintf("task-%s-%d", t.ID, start.UnixMilli())
+		chatID := fmt.Sprintf("task-%s-%d", plugin.ChatKey(t.ID), start.UnixMilli())
 		run, err := s.claimTask(t, in.Input, chatID, false, start)
 		if err != nil {
 			fail(w, http.StatusConflict, err)
 			return
 		}
-		go s.finishTask(t, run, "")
+		// startTask 在这里同步跑完（go 语句先在当前 goroutine 求出函数值），存好对话再返回 chat_id；返回的函数才放到后台
+		go s.startTask(t, run, "")()
 		writeJSON(w, map[string]any{"chat_id": chatID, "task": s.taskInfo(t)})
 	default:
 		fail(w, http.StatusNotFound, i18n.Errorf("没有这个操作：%s", "No such action: %s", action))
@@ -301,8 +319,13 @@ func (s *Server) apiLocalAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	chatID := fmt.Sprintf("ask-%d", start.UnixMilli())
+	exec, err := s.beginBackgroundChat(chatID, title, text, start)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
 	go func() {
-		if _, err := s.runBackgroundChat(chatID, title, text, start); err != nil {
+		if _, err := exec(); err != nil {
 			log.Printf("交给助手（%s）失败：%v", chatID, err)
 		}
 	}()

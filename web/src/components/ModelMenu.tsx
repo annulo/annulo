@@ -40,9 +40,11 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
   const update = async (body: { active?: string; thinking?: Thinking }) => {
     setErr('')
     const prev = st
-    setSt((s) => s && { ...s, active: body.active ?? s.active, thinking: body.thinking ?? s.thinking })
+    // 高亮看的是 thinking_effective（模型实际用的档）：选档时一起改，不然点了不动；换模型后它会变，存完重新读一次
+    setSt((s) => s && { ...s, active: body.active ?? s.active, thinking: body.thinking ?? s.thinking, thinking_effective: body.thinking ?? s.thinking_effective })
     try {
       await post('settings/llm', body, 'PUT')
+      getJSON<ModelSettings>('settings/llm').then((s) => setSt(normModelSettings(s))).catch(() => {})
       onChanged()
     } catch (e) {
       setSt(prev)
@@ -51,6 +53,9 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
   }
 
   const active = st?.models.find((m) => m.id === st.active)
+  // 思考档位只列当前模型有的（每个模型不一样）；选中的是它实际用的那档
+  const levels = active?.thinking_levels ?? st?.thinking_levels ?? []
+  const effective = st?.thinking_effective ?? st?.thinking
   const thinkingOn = llm?.reasoning && llm.thinking !== 'off'
 
   return (
@@ -135,17 +140,22 @@ export function ModelMenu({ llm, onChanged, onManage }: { llm?: Status['llm']; o
                   <span>{t('思考强度')}</span>
                   {active && !active.reasoning && <span className="font-normal">{t('这个模型不支持')}</span>}
                 </div>
-                <div role="radiogroup" aria-label="思考强度" className="mt-1.5 grid grid-cols-4 gap-1 rounded-lg bg-muted p-0.5">
-                  {st.thinking_levels.map((l) => (
+                <div
+                  role="radiogroup"
+                  aria-label="思考强度"
+                  className="mt-1.5 grid gap-1 rounded-lg bg-muted p-0.5"
+                  style={{ gridTemplateColumns: `repeat(${Math.max(levels.length, 1)}, minmax(0, 1fr))` }}
+                >
+                  {levels.map((l) => (
                     <button
                       key={l}
                       role="radio"
-                      aria-checked={st.thinking === l}
+                      aria-checked={effective === l}
                       disabled={!active?.reasoning}
-                      onClick={() => st.thinking !== l && update({ thinking: l })}
+                      onClick={() => effective !== l && update({ thinking: l })}
                       className={cn(
-                        'rounded-md py-1 text-xs font-semibold outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50',
-                        st.thinking === l ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
+                        'rounded-md py-1 text-xs font-semibold whitespace-nowrap outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50',
+                        effective === l ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
                       )}
                     >
                       {t(THINKING_LABEL[l])}

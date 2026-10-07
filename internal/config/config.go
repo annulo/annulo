@@ -100,6 +100,9 @@ type LLM struct {
 	Images *bool `json:"images,omitempty"`
 	// Reasoning：支不支持思考（推理强度）。打开后思考强度才会发给模型。
 	Reasoning bool `json:"reasoning,omitempty"`
+	// ThinkingLevels：用户自己配的思考档位（档 → 发给接口的值，值空就发档名），没写的档算不支持。
+	// 不配就按 pi 的模型资料，资料里也没有就按通用的 关 / 低 / 中 / 高（internal/agent/thinking.go）。
+	ThinkingLevels map[string]string `json:"thinking_levels,omitempty"`
 	// Pricing：creght 平台模型的价格（平台 /models 给的），自己加的模型没有。不存盘。
 	Pricing *Pricing `json:"-"`
 	// WebSearch：creght 平台标了能用 /responses 联网搜索（web_search）的模型（平台 /models 给的）；自己加的模型不知道，是 false。不存盘。
@@ -138,7 +141,9 @@ func (l LLM) Label() string {
 	return l.Model
 }
 
-var ThinkingLevels = []string{"off", "low", "medium", "high"}
+// ThinkingLevels 是全部思考档位，从低到高（和 pi 的一样）：关、最低、低、中、高、很高、最高。
+// 每个模型只支持其中一部分，见 internal/agent/thinking.go。
+var ThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // ThinkingLevel 是生效的思考强度，没设过按 medium。
 func (c *Config) ThinkingLevel() string {

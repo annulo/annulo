@@ -118,3 +118,40 @@ func TestGitTemplateNotFound(t *testing.T) {
 		t.Fatalf("地址不对要说清楚：%v", err)
 	}
 }
+
+func TestCatalogDirs(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v：%s", args, out)
+		}
+	}
+	write := func(p, c string) {
+		os.MkdirAll(filepath.Dir(filepath.Join(repo, p)), 0o755)
+		os.WriteFile(filepath.Join(repo, p), []byte(c), 0o644)
+	}
+	run("init", "-q")
+	write("blank/annulo.json", "{}")
+	write("old/shuttle.json", "{}")
+	write("docs/readme.md", "说明，不是模板")
+	write("nested/a/annulo.json", "{}") // 只认一级子目录
+	run("add", "-A")
+	run("commit", "-q", "-m", "v1")
+	run("tag", "-a", "v1.0.0", "-m", "v1")
+	write("creator/annulo.json", "{}") // 没发版本的不算
+	run("add", "-A")
+	run("commit", "-q", "-m", "wip")
+
+	tpl := Template{Site: GitSite(repo, ""), Cache: filepath.Join(t.TempDir(), "cache")}
+	dirs, err := CatalogDirs(context.Background(), tpl, "annulo.json", "shuttle.json")
+	if err != nil || strings.Join(dirs, ",") != "blank,old" {
+		t.Fatalf("%v %v", dirs, err)
+	}
+	run("tag", "-a", "v1.1.0", "-m", "v1.1")
+	if dirs, _ := CatalogDirs(context.Background(), tpl, "annulo.json"); strings.Join(dirs, ",") != "blank,creator" {
+		t.Fatalf("新版本里加的模板要列出来：%v", dirs)
+	}
+}

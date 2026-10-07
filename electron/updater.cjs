@@ -11,7 +11,8 @@ const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
 
 const run = promisify(execFile)
-const DEFAULT_FEED = 'https://shuttle.site.creght.cn/update.json'
+// 2026-10-06 起官网是 annulo.creght.cn；老域名 shuttle.site.creght.cn 要一直留着：之前装的 App 只读那里的 update.json
+const DEFAULT_FEED = 'https://annulo.creght.cn/update.json'
 
 // 版本号是日期 + 当天第几次：2026.9.29、2026.9.29-1……「-N」是同一天更晚的版本，不是 SemVer 的预发布版
 function parseVersion(v) {

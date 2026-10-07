@@ -16,7 +16,7 @@ import (
 	"github.com/annulo/annulo/internal/wsgit"
 )
 
-// shuttle push -m '说明'：把运营后台推到 creght。先 git 提交，远端有别人的改动先合进来，再推（不 --force）。
+// annulo push -m '说明'：把运营后台推到 creght。先 git 提交，远端有别人的改动先合进来，再推（不 --force）。
 // 只管运营后台；渠道站点用渠道自己的工具（creght 站点就是 creght push）。见 docs/workspace-git.md。
 func pushCmd() *cobra.Command {
 	var msg, dir string
@@ -74,7 +74,7 @@ func backendWorkspace(cfg *config.Config, dir string) (string, error) {
 			break
 		}
 	}
-	notBackend := i18n.Errorf("shuttle push 只用于运营后台（%s 下的项目）；渠道站点按渠道自己的流程推，creght 站点用 creght push", "shuttle push is only for the back office (projects under %s); push channel sites with their own workflow — creght sites use creght push", filepath.Join(cfg.Dir, "backends"))
+	notBackend := i18n.Errorf("annulo push 只用于运营后台（%s 下的项目）；渠道站点按渠道自己的流程推，creght 站点用 creght push", "annulo push is only for the back office (projects under %s); push channel sites with their own workflow — creght sites use creght push", filepath.Join(cfg.Dir, "backends"))
 	if root == "" {
 		return "", notBackend
 	}

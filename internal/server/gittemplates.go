@@ -16,10 +16,8 @@ import (
 )
 
 // git 模板（docs/annulo-plan.md 第 3 步）：模板是一个 git 仓库，版本是 semver tag。新建离线项目能选，升级和 creght 模板一样。
-// 列表 = 内置的（defaultTemplateSources）+ 设置里加的（config.json 的 template_sources）。名字和简介读模板最新一版的 annulo.json。
-
-// defaultTemplateSources：内置的 git 模板，每项 <仓库>[#<子目录>]（开源的模板仓库 github.com/annulo/templates）。
-var defaultTemplateSources = []string{"https://github.com/annulo/templates#blank"}
+// 列表 = 开源模板仓库 github.com/annulo/templates 里的（实时读仓库最新版本里有哪些子目录，见 catalog.go）+ 设置里加的（config.json 的 template_sources）。
+// 名字和简介读模板最新一版的 annulo.json。
 
 // templateSources 是设置里加的 git 模板（server 启动时从配置读，测试里直接改）。
 var templateSources struct {
@@ -59,7 +57,8 @@ func gitTemplate(site string) *templateDef {
 	if e.ok {
 		ttl = 5 * time.Minute
 	}
-	if !has || time.Since(e.at) > ttl {
+	// 没有数据目录（测试里）不去读：不然镜像会建在当前目录（源码目录）里
+	if dir != "" && (!has || time.Since(e.at) > ttl) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		meta, err := wsgit.GitMeta(ctx, t.wsgit(dir))
 		cancel()
@@ -84,8 +83,9 @@ func gitTemplate(site string) *templateDef {
 // gitTemplates 是能选的 git 模板，内置的在前；同一个仓库（子目录）只列一次。
 func gitTemplates() []*templateDef {
 	templateSources.Lock()
-	src := append(append([]string(nil), defaultTemplateSources...), templateSources.list...)
+	dir, user := templateSources.dir, append([]string(nil), templateSources.list...)
 	templateSources.Unlock()
+	src := append(templateCatalog.sources(dir), user...)
 	var out []*templateDef
 	seen := map[string]bool{}
 	for _, s := range src {

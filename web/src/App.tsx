@@ -12,7 +12,6 @@ import { Tip } from '@/components/ui/tip'
 import ChatPanel from '@/components/ChatPanel'
 import { Toaster } from '@/components/ui/sonner'
 import SettingsPage from '@/components/SettingsPage'
-import UsagePage from '@/components/UsagePage'
 import SetupPage from '@/components/SetupPage'
 import { AccountMenu } from '@/components/AccountMenu'
 import { AppMenu } from '@/components/AppMenu'
@@ -26,11 +25,10 @@ const initialPath = new URLSearchParams(location.search).get('path') || '/'
 
 const NAV: { view: View; label: string }[] = [
   { view: 'backend', label: '运营后台' },
-  { view: 'usage', label: '用量' },
   { view: 'settings', label: '设置' },
 ]
 
-/** 外壳：顶栏 + 运营后台（占满主区域）+ 右侧 AI 面板；设置、用量是盖在上面的弹窗 */
+/** 外壳：顶栏 + 运营后台（占满主区域）+ 右侧 AI 面板；设置（用量也在里面）是盖在上面的弹窗 */
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
   const [statusErr, setStatusErr] = useState('')
@@ -97,7 +95,7 @@ export default function App() {
     for (const p of m.parts) {
       if (p.type !== 'dynamic-tool') continue
       const cmd = String((p.input as { command?: string } | undefined)?.command ?? '')
-      if (/creght\s+(table\s+record\s+(create|update|delete)|content\s+(create|update|delete))|shuttle\s+run\s/.test(cmd)) data = true
+      if (/creght\s+(table\s+record\s+(create|update|delete)|content\s+(create|update|delete))|(annulo|shuttle)\s+run\s/.test(cmd)) data = true
     }
     if (data) frames.current.forEach((f) => postToPage(f.contentWindow, { type: 'shuttle:refresh' }))
   }, [])
@@ -172,6 +170,8 @@ export default function App() {
   useEffect(() => {
     const f = (e: MessageEvent) => {
       if (e.origin !== location.origin || msgType(e.data) !== 'shuttle:navigate') return
+      // 用量现在是设置里的一节：模板发 view: 'usage' 的转到 设置 → 用量
+      if (e.data.view === 'usage') return navigate('settings', '#usage')
       const v = e.data.view as View
       if (NAV.some((n) => n.view === v)) navigate(v, typeof e.data.hash === 'string' ? e.data.hash : '')
     }
@@ -257,26 +257,29 @@ export default function App() {
 
   return (
     <div className="flex h-dvh min-w-0 flex-col overflow-hidden bg-background text-foreground">
-      {/* 顶栏像 Chrome 的标签条：用侧栏色，当前标签用页面色和下面连成一片、贴着底边；logo、项目名和右边的按钮在顶栏里上下居中 */}
+      {/* 顶栏像 Chrome 的标签条：用侧栏色，当前标签用页面色和下面连成一片、贴着底边（上面空 8px），所以标签的文字比顶栏中线低 4px；
+          logo、项目名和右边的按钮跟着下移 4px（translate-y-1），和标签的文字在一条线上 */}
       <header className="relative z-40 grid h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto] gap-3 bg-sidebar px-4">
         <div className="flex h-full min-w-0 items-center gap-4">
-          <AppMenu theme={theme} onToggleTheme={toggleTheme} loggedIn={!!status?.creght.logged_in} />
+          <div className="shrink-0 translate-y-1">
+            <AppMenu theme={theme} onToggleTheme={toggleTheme} loggedIn={!!status?.creght.logged_in} />
+          </div>
           {status?.backend && (
             <>
-              <span className="-mx-2 shrink-0 text-muted-foreground/60" aria-hidden>
+              <span className="-mx-2 shrink-0 translate-y-1 text-muted-foreground/60" aria-hidden>
                 /
               </span>
-              <div className="shrink-0">
+              <div className="shrink-0 translate-y-1">
                 <WorkspaceSwitcher current={status.backend.project_id} />
               </div>
-              <div className="-ml-px h-7 w-px shrink-0 bg-border" />
+              <div className="-ml-px h-7 w-px shrink-0 translate-y-1 bg-border" />
               {/* 不放运营后台的预览地址：后台要从 Annulo 里打开才能读写数据，单独打开预览会报错 */}
               <TabStrip tabs={tabs} active={active} frames={frames.current} onSelect={setActive} onClose={closeTab} onNew={() => openTab()} />
             </>
           )}
         </div>
 
-        <div className="flex h-full min-w-0 items-center justify-end gap-3">
+        <div className="flex h-full min-w-0 translate-y-1 items-center justify-end gap-3">
           {statusErr && <span className="max-w-60 truncate text-xs text-destructive">{statusErr}</span>}
           {status?.backend?.offline && status.creght.logged_in && (
             <Tip label={t('这个项目是离线的：数据只在这台电脑上。在 设置 → 项目 里可以转成在线项目。')}>
@@ -337,7 +340,7 @@ export default function App() {
           />
         )}
       </div>
-      {/* 设置、用量是次要的：从运营后台里的入口（或右上角头像菜单）打开，弹窗盖在后台上，关掉回到原处 */}
+      {/* 设置（含用量）是次要的：从运营后台里的入口（或右上角头像菜单）打开，弹窗盖在后台上，关掉回到原处 */}
       {view !== 'backend' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px] sm:p-8" onMouseDown={(e) => e.target === e.currentTarget && navigate('backend')}>
           <div
@@ -352,7 +355,7 @@ export default function App() {
                 <X className="size-[18px]" />
               </Button>
             </div>
-            <div className="min-h-0 flex-1">{view === 'usage' ? <UsagePage /> : <SettingsPage onSaved={loadStatus} creght={!!status?.creght.logged_in} />}</div>
+            <div className="min-h-0 flex-1"><SettingsPage onSaved={loadStatus} creght={!!status?.creght.logged_in} /></div>
           </div>
         </div>
       )}

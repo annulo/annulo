@@ -13,7 +13,8 @@ import (
 //  2. import 入口，把每个已加载模块导出的组件注册给 Refresh（按「路径 导出名」），再用入口的 createApp 渲染；
 //  3. 订阅 /_client/events：
 //     - 能热替换（boundaries）：重新 import 这些模块的新 URL、注册、performReactRefresh()，页面状态保留；
-//     之后冒出 hooks 相关的报错（改了 hooks 的顺序）就退回重新渲染入口；
+//     之后冒出 hooks 相关的报错（改了 hooks 的个数或顺序，比如「Should have a queue」）就卸掉 root、新建一个重新渲染入口：
+//     同一个 root 上重新 render 会复用旧 fiber，hooks 还是对不上（folia-web 的 isReactHooksOrderError 认的也是这几种）；
 //     - 不能（boundaries 为 null）：import 新入口重新渲染（状态丢掉）；
 //     - css：只换 <style id="__shuttle_css__">，Tailwind browser 自己重新生成；
 //     - error：构建出错，盖一层报错，修好后刷新一次（顺带清掉报错列表）；reload：importMap、配置、文案变了，整页刷新；
@@ -59,6 +60,8 @@ async function register(path, url) {
 
 let mods = S.modules, build = S.build, broken = !!S.error, root = null;
 const { createRoot } = await import("react-dom/client");
+// 改了 hooks 的个数或顺序后，Fast Refresh 复用旧 fiber 报的错
+const hooksError = (m) => /hook|Should have a queue/i.test(String(m || ""));
 async function mount(entry) {
   const app = await import(entry);
   // 动态 import 的（lazy）还没加载，不去碰它：用到它时它自己加载，改它时再注册
@@ -95,9 +98,17 @@ async function apply(u) {
       if (prev[p]) await register(p, prev[p].url); // 旧版本先注册（lazy 模块之前没注册过），新版本才能认出是同一个组件
       await register(p, mods[p].url);
     }
-    R.performReactRefresh();
-    await new Promise((r) => setTimeout(r, 150));
-    if (errors.slice(seen).some((e) => /hook/i.test(e.message))) await mount(u.entry);
+    let failed = false;
+    try { R.performReactRefresh(); } catch (e) { if (!hooksError(e && e.message)) throw e; failed = true; }
+    // 路由的错误边界在 effect 里才上报，等一会儿再看
+    await new Promise((r) => setTimeout(r, 300));
+    if (failed || errors.slice(seen).some((e) => hooksError(e.message))) {
+      console.warn("[shuttle] hooks changed, remounting the page");
+      if (root) { root.unmount(); root = null; } // 新的 root：不复用旧 fiber，hooks 从头来（页面状态会丢）
+      await mount(u.entry);
+      // 救回来了：这次的 hooks 报错不算页面出错（外壳读这个列表提示「后台页面出错了」）
+      for (let i = errors.length - 1; i >= seen; i--) if (hooksError(errors[i].message) || hooksError(errors[i].detail)) errors.splice(i, 1);
+    }
     return;
   }
   await mount(u.entry);

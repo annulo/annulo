@@ -210,7 +210,7 @@ func (a *Agent) DisabledProviders() []string {
 }
 
 // SetProviderEnabled 打开或关掉一个服务商（creght 平台、本机 agent、自己加的）。关掉以后它的模型不出现，
-// 当前模型在里面就回到默认；没有别的模型可用时不让关，免得助手没模型可用。
+// 当前模型在里面就回到默认。全关了也行：不用 AI 是正常用法，助手和 ctx.agent.current() 会说「还没有能用的模型」。
 func (a *Agent) SetProviderEnabled(id string, on bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -221,16 +221,11 @@ func (a *Agent) SetProviderEnabled(id string, on bool) error {
 	if !known {
 		return i18n.Errorf("没有这个服务商：%s", "No such provider: %s", id)
 	}
-	prev := a.cfg.DisabledProviders
-	next := slices.DeleteFunc(append([]string{}, prev...), func(x string) bool { return x == id })
+	next := slices.DeleteFunc(append([]string{}, a.cfg.DisabledProviders...), func(x string) bool { return x == id })
 	if !on {
 		next = append(next, id)
 	}
 	a.cfg.DisabledProviders = next
-	if !on && len(a.models()) == 0 {
-		a.cfg.DisabledProviders = prev
-		return i18n.New("关掉以后就没有模型可用了：先加一个别的模型，或者打开别的服务商", "Turning this off would leave no model to use: add another model or turn on another provider first")
-	}
 	return a.cfg.Save()
 }
 
@@ -393,6 +388,14 @@ func (a *Agent) SaveModel(m config.LLM) (config.LLM, error) {
 		return m, i18n.New("平台的模型不能修改", "Platform models can't be edited")
 	}
 	m.Api, m.BaseURL, m.APIKey, m.APIKeyEnv = "", "", "", ""
+	// 同一个服务商下不能有两个一样的模型 id
+	if slices.ContainsFunc(a.cfg.Models, func(x config.LLM) bool { return x.ID != m.ID && x.Provider == m.Provider && x.Model == m.Model }) {
+		name := m.Provider
+		if p, ok := a.cfg.ProviderByID(m.Provider); ok {
+			name = p.Name
+		}
+		return m, i18n.Errorf("「%s」下已经有 %s 了", "\"%s\" already has %s", name, m.Model)
+	}
 	if m.ID == "" {
 		m.ID = newID("m", func(id string) bool {
 			return slices.ContainsFunc(a.cfg.Models, func(x config.LLM) bool { return x.ID == id })
@@ -490,7 +493,7 @@ func (a *Agent) ThinkingLevel() string {
 	return a.cfg.ThinkingLevel()
 }
 
-// SetThinking 设置思考强度（off / low / medium / high）。
+// SetThinking 设置思考强度（config.ThinkingLevels 里的一档；当前模型没有这档时按最接近的发）。
 func (a *Agent) SetThinking(level string) error {
 	if !slices.Contains(config.ThinkingLevels, level) {
 		return i18n.Errorf("思考强度只能是 %s", "Thinking level must be %s", strings.Join(config.ThinkingLevels, " / "))
@@ -542,8 +545,31 @@ func modelSig(l config.LLM) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%d|%v|%v|%s", l.ID, l.Api, l.BaseURL, l.Model, l.Window(), l.Reasoning, l.Vision(), l.Key())
 }
 
+// SetChatThinking 让这段对话固定用某个思考档位（空 = 跟全局设置走）。任务文件写了 thinking 时用：
+// 抽资料这类不用深想的任务用低档，快得多。
+func (a *Agent) SetChatThinking(chatID, level string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if level == "" {
+		delete(a.chatThinking, chatID)
+		return
+	}
+	if a.chatThinking == nil {
+		a.chatThinking = map[string]string{}
+	}
+	a.chatThinking[chatID] = level
+}
+
+// thinkingFor 是这段对话用的思考档位：固定了就用固定的，否则是全局设置（调用方持有 a.mu）
+func (a *Agent) thinkingFor(chatID string) string {
+	if l := a.chatThinking[chatID]; l != "" {
+		return l
+	}
+	return a.cfg.ThinkingLevel()
+}
+
 // applySettings 在每轮开始前把当前的模型和思考强度同步到会话上（调用方持有 a.mu）。
-func (a *Agent) applySettings(c *chatSession) error {
+func (a *Agent) applySettings(c *chatSession, chatID string) error {
 	l, err := a.resolved()
 	if err != nil {
 		return err
@@ -556,7 +582,7 @@ func (a *Agent) applySettings(c *chatSession) error {
 		c.sess.SetModel(m, key)
 		c.model = sig
 	}
-	if t := a.cfg.ThinkingLevel(); t != c.thinking {
+	if t := a.thinkingFor(chatID); t != c.thinking {
 		c.sess.SetThinkingLevel(agent.ThinkingLevel(t))
 		c.thinking = t
 	}
@@ -661,6 +687,7 @@ func modelFor(l config.LLM) (*ai.Model, string, error) {
 		MaxTokens:     32000,
 		Compat:        compatFor(l),
 	}
+	m.ThinkingLevelMap, _ = thinkingMap(l) // 每档发什么、哪些档不支持（thinking.go）
 	return m, l.Key(), nil
 }
 

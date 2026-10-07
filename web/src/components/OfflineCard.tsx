@@ -14,6 +14,8 @@ export default function OfflineCard() {
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // 转完了，但有本机文件没传上去：先列出来，用户看过再进新项目
+  const [failed, setFailed] = useState<{ table: string; ref: string; error: string }[] | null>(null)
   useEffect(() => {
     getJSON<Status>('status').then(setSt).catch(() => {})
   }, [])
@@ -23,7 +25,12 @@ export default function OfflineCard() {
     setBusy(true)
     setErr('')
     try {
-      await post('setup/online', {})
+      const r = await post('setup/online', {})
+      const out = (await r.json()) as { assets_failed?: { table: string; ref: string; error: string }[] }
+      if (out.assets_failed?.length) {
+        setFailed(out.assets_failed)
+        return
+      }
       location.reload()
     } catch (e) {
       setErr((e as Error).message)
@@ -42,7 +49,23 @@ export default function OfflineCard() {
           </div>
         </div>
       </div>
-      {confirm ? (
+      {failed ? (
+        <div className="space-y-2 rounded-lg bg-muted/60 px-3 py-2.5">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t('已经转成在线项目，但下面这些本机上传的文件没迁过去，数据里还是本机地址、线上打不开。进项目后在用到它们的地方（比如资料库）重新上传一次。')}
+          </p>
+          <ul className="max-h-40 space-y-1 overflow-y-auto text-[11px]">
+            {failed.map((f) => (
+              <li key={f.ref} className="break-all">
+                <span className="font-medium">{f.table}</span> · {f.ref.split('/').pop()} <span className="text-muted-foreground">（{f.error}）</span>
+              </li>
+            ))}
+          </ul>
+          <Button size="sm" onClick={() => location.reload()}>
+            {t('知道了，进入项目')}
+          </Button>
+        </div>
+      ) : confirm ? (
         <div className="space-y-2 rounded-lg bg-muted/60 px-3 py-2.5">
           <p className="text-xs leading-relaxed text-muted-foreground">
             {t('会在你的 creght 账号下建一个新项目，把后台页面、全部业务数据和上传的文件迁过去，对话历史留在本机跟着走。转完以后这个项目就是在线的，不能再转回离线。数据多的话要几分钟。')}

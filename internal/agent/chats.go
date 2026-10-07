@@ -67,7 +67,10 @@ type ChatSummary struct {
 	Status string `json:"status,omitempty"`
 }
 
-var chatIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var chatIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,96}$`) // 插件的任务、定时任务拼进来更长（task-social__write-x-…）
+
+// ValidChatID：是不是一个合法的对话 id（本机函数的 ctx.chat_id 只收合法的）
+func ValidChatID(id string) bool { return chatIDRe.MatchString(id) }
 
 var ErrBadChatID = i18n.New("对话 id 不合法", "Invalid chat id")
 

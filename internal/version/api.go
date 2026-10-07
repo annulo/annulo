@@ -84,4 +84,33 @@ package version
 // 27 助手面板的名字、介绍、示例问题由项目决定：annulo.json / shuttle.json 的 "assistant": { name, intro, suggestions }，
 //
 //	每项写字符串或 {zh, en}（suggestions 是数组或 {zh: [...], en: [...]}）；没写用通用的（internal/server/assistantinfo.go）。
-const API = 27
+// 28 插件（docs/plugins.md）：项目 = 模板 + 插件，插件装在 plugins/<id>/（有 plugin.json），东西都带插件 id——
+//
+//	本机函数 <id>/x.f（plugins/<id>/local/x.ts，云端站点 Func local/<id>__x）、表 <id>_t、任务 <id>/w（用户写法 user/plugins/<id>/prompts/w.md）、
+//	定时任务 <id>/s、skill；模板在 annulo.json 的 "plugins": {"<id>": "<仓库>#<目录>"} 声明（新建项目、模板升级时自动装），用户装卸的记在 user/annulo.json；
+//	接口 GET plugins、POST plugins/install | upgrade | remove
+//	（internal/plugin、internal/wsgit/plugin.go、internal/server/plugins.go）。
+// 29 ctx.exec(命令, [参数…], { cwd, input, timeout, env })：本机函数跑本机的命令行工具，不经过 shell，返回 { code, stdout, stderr, truncated }
+//
+//	（internal/localfn/exec.go；找命令按登录 shell 的 PATH，internal/localcmd）。云端不能用。
+// 30 ctx.mcp.servers() → [{ name, status }]：用户加了哪些 MCP 和连接状态（connected / needs_auth / connecting / failed / disabled），
+//
+//	没连 creght 时没有 creght 这一项（Annulo 连了 creght 才加它的 MCP）；页面据此决定显不显示某个集成，不用靠调用报错来猜。
+//	云端固定返回 creght（internal/localfn/cloud.go）。
+//	ctx.agent.current() → { id, name, provider, model, ready, error }：助手当前的模型和能不能跑（外部 agent 也算），
+//	没配模型时 ready=false、error 说去哪配；页面据此决定交给助手的按钮能不能用。云端不能用。
+//	ctx.llm.providers() / GET local/llm/providers 加 kind：api（能 ctx.llm.fetch）或 cli（本机装了的 Claude Code / Codex，也列出来了，
+//	没有接口地址，ctx.llm.fetch 调它会报错）。要发请求的只用 kind === 'api' 的。
+//
+// 31 任务文件的 frontmatter 可以写 thinking: low（internal/tasks）：任务跑的那一轮固定用这个思考档位，不跟用户的设置走；
+//
+//	老版本 Annulo 不认这个字段，照常按设置跑（不用调 min_shuttle_api）。
+//
+// 32 ctx.chat_id：助手在对话里用 annulo run 跑的函数能拿到对话 id（Annulo 给助手的 bash、Claude Code / Codex 都设了
+//
+//	ANNULO_CHAT_ID，annulo run 带过去）；页面按钮、定时任务、云端是空字符串。任务开头不再写对话 id 让助手照抄。
+//
+// 33 离线项目上传的文件地址改成不带端口的 /_annulo/uploaded/<文件>（端口会变；老数据里带端口的完整地址照样认）：
+//
+//	ctx.fetch、b.upload、图片代理都认这种地址；annulo upload <文件…> 命令把本机文件传进当前项目拿地址（和 local/upload 同一条路）。
+const API = 33

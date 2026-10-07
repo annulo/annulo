@@ -32,7 +32,7 @@ test('picks this machine\'s installer only when it is newer and well-formed', ()
 })
 
 test('feeds and downloads must be https, except localhost for testing', () => {
-  assert.equal(allowedURL('https://shuttle.site.creght.cn/update.json'), true)
+  assert.equal(allowedURL('https://annulo.creght.cn/update.json'), true)
   assert.equal(allowedURL('http://127.0.0.1:8000/update.json'), true)
   for (const u of ['http://example.com/a', 'file:///tmp/a.dmg', 'javascript:1']) assert.equal(allowedURL(u), false)
 })

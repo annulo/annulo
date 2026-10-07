@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,5 +77,19 @@ func TestImageProxy(t *testing.T) {
 	t.Setenv("SHUTTLE_FETCH_ALLOW_PRIVATE", "")
 	if w := get(origin.URL+"/b.jpg", nil); w.Code != http.StatusBadGateway {
 		t.Fatalf("内网地址应该被拒：%d %q", w.Code, w.Body.String())
+	}
+	// 离线项目上传到本机的文件：不走网络规则，直接读出来
+	os.MkdirAll(s.assetsDir(), 0o700)
+	name := "0123456789abcdef0123456789abcdef.png"
+	os.WriteFile(filepath.Join(s.assetsDir(), name), []byte("png-bytes"), 0o600)
+	if w := get("http://127.0.0.1:7799/_shuttle/uploaded/"+name, nil); w.Code != 200 || w.Body.String() != "png-bytes" {
+		t.Fatalf("本机上传的图片：%d %q", w.Code, w.Body.String())
+	}
+	if w := get("/_annulo/uploaded/"+name, nil); w.Code != 200 || w.Body.String() != "png-bytes" {
+		t.Fatalf("本机上传的图片（不带端口的地址）：%d %q", w.Code, w.Body.String())
+	}
+	// 本机别的地址照样拒绝
+	if w := get("http://127.0.0.1:7799/_shuttle/uploaded/../config.json", nil); w.Code == 200 {
+		t.Fatalf("不是上传文件的本机地址不该给：%d", w.Code)
 	}
 }

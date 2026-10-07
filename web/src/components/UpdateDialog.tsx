@@ -39,7 +39,6 @@ export function UpdateDialog({ update, onDownload, onInstall, onClose }: { updat
                   {mb(received)} / {mb(bytes)} MB
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">{t('可以关掉这个窗口，会在后台接着下载。')}</p>
             </div>
           )}
           {state === 'ready' && <p className="text-xs text-muted-foreground">{t('已经下载好。安装时 Annulo 会退出再自动打开，正在运行的对话会停止。')}</p>}
