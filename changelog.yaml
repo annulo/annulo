@@ -4,6 +4,9 @@
 # Annulo release notes, newest first: each entry has a version plus one single-line note per language.
 # Write "version: next" for the coming release; make release swaps in the real version.
 
+- version: 2026.10.19-1
+  zh: "浏览器助手能看到只有图标的按钮（⋮、×），悬停会真的移鼠标；知乎发布、删除和 B站 删除稿件也交给它做了。"
+  en: "The browser assistant now sees icon-only buttons (⋮, ×) and really moves the mouse to hover; Zhihu publishing and deleting, and deleting Bilibili videos, are handed to it too."
 - version: 2026.10.19
   zh: "浏览器助手能看着页面把一整件事做完，B站 投稿先用上，页面改了也能自己找到；发布进度能看每一步的耗时和 token。浏览器助手（脚本卡住时帮一步的 AI）能看到更多入口了：不是按钮、用 div 做的入口（比如抖音的「选择封面」），和鼠标移上去才出现的按钮（比如小红书封面缩略图上的「编辑封面」）。以前它看不到这些，只能回「找不到入口」。"
   en: "The browser assistant can now finish a whole task by looking at the page; Bilibili uploads use it first and keep working when the page changes. Publishing progress shows each step's time and tokens. The browser assistant (the AI that helps when a script gets stuck) now sees more entry points: clickable areas that aren't buttons (like Douyin's \"选择封面\" cover picker) and buttons that only appear when you hover (like \"编辑封面\" on Xiaohongshu's cover thumbnail). Before, it couldn't see them and could only reply that it found no entry."

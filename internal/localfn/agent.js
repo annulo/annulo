@@ -33,6 +33,7 @@
     'Actions:',
     '{"do":"click","id":N}',
     '{"do":"type","id":N,"text":"...","clear":true}   plain inputs and search boxes only; rich-text editors (marked rich) need a tool',
+    '{"do":"hover","id":N}   move the mouse onto an element (menus that only open on hover)',
     '{"do":"select","id":N,"option":"..."}   choose a dropdown option by its exact text (always use this for dropdowns, not clicks on options)',
     '{"do":"press","key":"Enter"}   also Escape, Tab, Backspace, ArrowDown, ArrowUp',
     '{"do":"scroll","id":N} brings an element into view; {"do":"scroll","dy":600} scrolls the page',
@@ -66,6 +67,7 @@
   var BUILTIN = [
     { name: 'click', description: 'Click an element by its number.', params: obj({ id: INT }, ['id']) },
     { name: 'type', description: 'Type into a plain input or search box (not rich-text editors). clear replaces what is there (default true).', params: obj({ id: INT, text: STR, clear: { type: 'boolean' } }, ['id', 'text']) },
+    { name: 'hover', description: 'Move the mouse onto an element: opens menus and toolbars that only show on hover (a ⋮ / More button that does nothing when clicked).', params: obj({ id: INT }, ['id']) },
     { name: 'select', description: 'Choose an option in a dropdown: opens the field (by its number), finds the option by its exact text, clicks it and checks the field. Always use this for dropdowns instead of clicking options by number.', params: obj({ id: INT, option: STR }, ['id', 'option']) },
     { name: 'press', description: 'Press a key: Enter, Escape, Tab, Backspace, ArrowDown, ArrowUp.', params: obj({ key: STR }, ['key']) },
     { name: 'scroll', description: 'Bring an element into view (id), or scroll the page by dy pixels.', params: obj({ id: INT, dy: INT }) },
@@ -260,6 +262,13 @@
           if (e.rich && !opts.richType) throw new Error('element ' + a.id + ' is a rich-text editor; use a tool to fill it')
           await b.type('[data-annulo-act="' + e.id + '"]', String(a.text == null ? '' : a.text), { clear: a.clear !== false })
           return 'typed into [' + a.id + ']'
+        case 'hover':
+          e = find(a.id)
+          if (!e) throw new Error('no element ' + a.id)
+          // 真的把鼠标移上去：菜单、按钮常靠 CSS :hover 才显示，派发事件触发不了（2026-10-19 B站 稿件管理的「⋮」）
+          await b.__hover(e.id)
+          await settle()
+          return 'hovered ' + describe(e)
         case 'select':
           e = find(a.id)
           if (!e) throw new Error('no element ' + a.id)

@@ -182,4 +182,7 @@ package version
 //
 //	经验记在笔记里（插件自带 plugins/<插件>/notes/<名字>.md，项目自己的 user/notes/<插件>/<名字>.md），不做机械重放。见 docs/browser-agent.md。
 //	插件用之前检查 typeof b.agent === 'function'，老版本退回脚本流程。
-const API = 50
+// 51 b.agent 的 hover 真的移鼠标（:hover 才显示的菜单），页面快照收没有 href 的 <a> 和纯图标按钮（图标的 class 名当说明）。
+//
+//	B站 删除稿件（悬停「⋮」出菜单）要它；插件的 min_annulo_api 跟着调到 51。
+const API = 51

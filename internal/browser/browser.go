@@ -775,6 +775,21 @@ var shadowHookJS = `(() => {
 })()`
 
 // Click 点一个元素：sel 是选择器；sel 为空时按可见文字 text 找。
+// Hover 把真的鼠标移到元素中间（Input.dispatchMouseEvent mouseMoved），和真人移鼠标一样：CSS 的 :hover 和 mouseover / mouseenter 都会触发。
+// 只派发事件触发不了 :hover，靠 :hover 才显示的按钮（B站 稿件管理一行里的「⋮」）出不来（2026-10-19）
+func (p *Page) Hover(parent context.Context, sel string) error {
+	var xy []float64
+	if err := p.run(parent, 0, i18n.Tf("找到「%s」", "Finding \"%s\"", sel), chromedp.Evaluate(fmt.Sprintf(`(() => { const e = document.querySelector(%s); if (!e) return null; e.scrollIntoView({ block: "center" }); const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })()`, jsString(sel)), &xy)); err != nil {
+		return err
+	}
+	if len(xy) != 2 {
+		return i18n.Errorf("页面上没有「%s」", "No \"%s\" on the page", sel)
+	}
+	return p.run(parent, 0, i18n.Tf("把鼠标移到「%s」", "Moving the mouse onto \"%s\"", sel), chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.DispatchMouseEvent(input.MouseMoved, xy[0], xy[1]).Do(ctx)
+	}))
+}
+
 func (p *Page) Click(parent context.Context, sel, text string, timeout time.Duration) error {
 	what := i18n.Tf("点击「%s」", "Clicking \"%s\"", sel)
 	if sel == "" {

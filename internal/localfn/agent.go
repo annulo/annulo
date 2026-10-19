@@ -35,7 +35,8 @@ var agentJS string
 const agentObserveJS = `(() => {
   document.querySelectorAll('[data-annulo-act]').forEach(e => e.removeAttribute('data-annulo-act'))
   document.querySelectorAll('[data-annulo-file]').forEach(e => e.removeAttribute('data-annulo-file'))
-  const sel = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="textbox"],[role="option"],[role="switch"],[role="combobox"],[contenteditable="true"],[contenteditable=""],[tabindex]:not([tabindex="-1"])'
+  // a 不只收带 href 的：Vue / React 的页面里很多按钮是没有 href 的 <a>（2026-10 B站 稿件管理的「编辑」「⋮」）
+  const sel = 'a,button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="textbox"],[role="option"],[role="switch"],[role="combobox"],[contenteditable="true"],[contenteditable=""],[tabindex]:not([tabindex="-1"])'
   const vw = innerWidth, vh = innerHeight
   const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s }
   const hiddenStyle = s => s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0
@@ -76,7 +77,13 @@ const agentObserveJS = `(() => {
     const text = editable ? '' : clip(e.innerText || e.value, 80)
     const icon = e.getAttribute('aria-label') ? null : e.querySelector('[aria-label], img[alt], svg title')
     const label = clip(e.getAttribute('aria-label') || (icon && (icon.getAttribute('aria-label') || icon.getAttribute('alt') || icon.textContent)) || '', 60)
-    const hint = clip(e.getAttribute('placeholder') || e.getAttribute('title') || e.getAttribute('data-placeholder') || '', 60)
+    let hint = clip(e.getAttribute('placeholder') || e.getAttribute('title') || e.getAttribute('data-placeholder') || '', 60)
+    // 只有一个字体图标的按钮（⋮、×、齿轮）：没字、没 aria-label，用图标的 class 名说明它（icon_list_more_x 一看就是「更多」）
+    if (!text && !label && !hint && !editable) {
+      const cls = [e, ...e.querySelectorAll('i,svg,span,use')].map(x => String(x.className && x.className.baseVal !== undefined ? x.className.baseVal : x.className || '') + ' ' + (x.getAttribute('href') || x.getAttribute('xlink:href') || '')).join(' ')
+      const icon = cls.split(/\s+/).find(c => /icon|more|close|delete|edit|setting|menu|search/i.test(c) && c.length > 3)
+      if (icon) hint = 'icon: ' + clip(icon, 50)
+    }
     if (!text && !label && !hint && !editable) continue
     const r = e.getBoundingClientRect()
     const inView = r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw
@@ -219,6 +226,19 @@ func (r *runner) agentMethods(o *goja.Object, p BrowserPage) {
 		if err == nil && v != true {
 			err = fmt.Errorf("element %d is gone", id)
 		}
+		return r.agentDone(err)
+	})
+	// __hover(id)：真的把鼠标移上去（:hover 才显示的按钮要这样）；这个浏览器做不到时退回在页面里派发移入事件
+	o.Set("__hover", func(id int) *goja.Promise {
+		sel := fmt.Sprintf(`[data-annulo-act="%d"]`, id)
+		if h, ok := p.(interface {
+			Hover(context.Context, string) error
+		}); ok {
+			if err := h.Hover(r.ctx, sel); err == nil {
+				return r.resolved(true)
+			}
+		}
+		_, err := p.Eval(r.ctx, fmt.Sprintf(`(() => { const x = document.querySelector(%q); if (!x) return false; x.scrollIntoView({ block: "center" }); const r = x.getBoundingClientRect(), o = { bubbles: true, cancelable: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; for (const t of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) x.dispatchEvent(new (t.startsWith("pointer") ? PointerEvent : MouseEvent)(t, o)); return true })()`, sel))
 		return r.agentDone(err)
 	})
 	o.Set("__llm", func(system, prompt string) *goja.Promise {

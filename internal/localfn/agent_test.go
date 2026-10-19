@@ -20,6 +20,8 @@ const agentPage = `<!doctype html><body>
 <div class="item"><span>* 标题</span><div><input id="t" placeholder="填写标题"></div></div>
 <div class="item"><span>简介</span><div><div id="d" contenteditable="true"></div></div></div>
 <div class="item"><span>* 创作声明</span><div><input id="decl" readonly placeholder="请选择"><ul id="opts" style="display:none"><li>含虚构演绎内容</li><li>含AI生成内容</li></ul></div></div>
+<style>#menu { display: none } #row:hover #menu { display: block } #menu span { cursor: pointer }</style>
+<div id="row"><a class="more-btn" style="display:inline-block;width:16px;height:16px"><i class="bcc-iconfont bcc-icon-icon_list_more_x"></i></a><div id="menu"><span id="del" style="cursor:pointer">删除稿件</span></div></div>
 <button id="pub">发布</button>
 <div id="dlg" role="dialog" style="display:none">确认发布？<button id="yes">确定</button></div>
 <div id="ok"></div>
@@ -211,7 +213,7 @@ export async function run(input: { url: string }, ctx: any) {
 	if r := out["r"].(map[string]any); r["ok"] != true || r["summary"] != "published" || out["ok"] != "发布成功" || out["title"] != "我的标题" || out["decl"] != "含AI生成内容" {
 		t.Fatalf("结果：%v", out)
 	}
-	if strings.Join(gotTools, ",") != "click,type,select,press,scroll,wait,ask_user,done,fail,publish" {
+	if strings.Join(gotTools, ",") != "click,type,hover,select,press,scroll,wait,ask_user,done,fail,publish" {
 		t.Fatalf("工具：%v", gotTools)
 	}
 	// 结束时一条带汇总的进度：总耗时、用量累加（两轮 100+200 输入）；每一步的进度只有那句话，没有耗时
@@ -265,5 +267,41 @@ export async function run(input: { url: string }, ctx: any) {
 	}
 	if r := res.(map[string]any); r["ok"] != false || !strings.Contains(r["reason"].(string), "原地打转") || n != 3 {
 		t.Fatalf("%v n=%d", r, n)
+	}
+}
+
+// hover：菜单靠 CSS :hover 才显示（点击不弹，派发事件也不行），要真的把鼠标移上去
+func TestAgentHover(t *testing.T) {
+	needChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(agentPage)) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	h := host(dir, &memDB{rows: map[string][]map[string]any{}})
+	h.Browser = testBrowser{browser.NewManager(t.TempDir(), nil)}
+	h.AgentTools = func(_ context.Context, system, prompt string, tools []AgentTool) (*AgentReply, error) {
+		if strings.Contains(prompt, "hovered") {
+			return &AgentReply{Calls: []AgentCall{{Name: "done", Args: map[string]any{"summary": "menu open"}}}}, nil
+		}
+		// 纯图标、没有 href 的 <a>：要能看到它，说明是图标的 class 名
+		m := regexp.MustCompile(`\[(\d+)\] a [^\n]*hint="icon: [^"]*more[^"]*"`).FindStringSubmatch(prompt)
+		if m == nil {
+			t.Fatalf("纯图标按钮没列出来：%s", prompt)
+		}
+		id := m[1]
+		return &AgentReply{Calls: []AgentCall{{Name: "hover", Args: map[string]any{"id": id}}}}, nil
+	}
+	write(t, dir, "hv.ts", `
+export async function run(input: { url: string }, ctx: any) {
+  const b = await ctx.browser.open({ profile: 'demo', url: input.url })
+  const r = await b.agent('打开更多菜单', {})
+  return { r, shown: await b.eval(() => getComputedStyle(document.querySelector('#menu')).display) }
+}
+`)
+	res, err := Run(context.Background(), h, "hv.run", map[string]any{"url": srv.URL + "/"}, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := res.(map[string]any); out["shown"] != "block" || out["r"].(map[string]any)["ok"] != true {
+		t.Fatalf("%v", out)
 	}
 }
