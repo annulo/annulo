@@ -122,7 +122,45 @@ const agentObserveJS = `(() => {
       hint: clip(target.getAttribute('title') || '', 60), type: '', dialog, disabled: false, editable: false, hover })
   }
   items.sort((a, b) => a.rank - b.rank)
-  const list = items.slice(0, 220).map((x, i) => { x.e.setAttribute('data-annulo-act', String(i + 1)); const { e, rank, ...rest } = x; return { id: i + 1, ...rest } })
+  const kept = items.slice(0, 220)
+  kept.forEach((x, i) => x.e.setAttribute('data-annulo-act', String(i + 1)))
+  // 列表里的一行（作品卡片、表格行）：按钮只写「删除」「编辑」，认这一行是哪条要看行里的标题、日期这些不能点的字，
+  // 只列元素的话 AI 分不出哪个「删除」是哪一条（2026-10 抖音作品管理）。
+  // 从元素往上找第一个「有同样 tag 和 class 的兄弟、自己还有不属于任何编号元素的字」的容器当行，行的字单独列出来，元素标 row=<n>
+  const ownText = new Map()
+  const textOf = box => {
+    if (ownText.has(box)) return ownText.get(box)
+    let t = ''
+    const w = document.createTreeWalker(box, NodeFilter.SHOW_TEXT)
+    for (let n = w.nextNode(); n && t.length < 160; n = w.nextNode()) {
+      const s = n.nodeValue.replace(/\s+/g, ' ').trim(), el = n.parentElement
+      if (!s || !el || /^(SCRIPT|STYLE)$/.test(el.tagName)) continue
+      const act = el.closest('[data-annulo-act]')
+      if (act && box.contains(act)) continue
+      if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue
+      t += (t ? ' · ' : '') + s
+    }
+    t = clip(t, 140)
+    ownText.set(box, t)
+    return t
+  }
+  const repeated = box => {
+    const par = box.parentElement
+    if (!par || box === document.body) return false
+    const cls = String(box.className || '')
+    if (!cls && !/^(LI|TR|ARTICLE)$/.test(box.tagName) && !/^(row|listitem|article)$/.test(box.getAttribute('role') || '')) return false
+    return [...par.children].some(c => c !== box && c.tagName === box.tagName && String(c.className || '') === cls)
+  }
+  const rowIds = new Map(), rows = []
+  const rowOf = e => {
+    for (let box = e.parentElement, i = 0; box && box !== document.body && i < 10; box = box.parentElement, i++) {
+      if (!repeated(box) || !textOf(box)) continue
+      if (!rowIds.has(box)) { rows.push({ id: rows.length + 1, text: textOf(box) }); rowIds.set(box, rows.length) }
+      return rowIds.get(box)
+    }
+    return 0
+  }
+  const list = kept.map((x, i) => { const { e, rank, ...rest } = x; const row = x.dialog ? 0 : rowOf(e); return { id: i + 1, ...rest, ...(row ? { row } : {}) } })
   // 上传框：一般是藏起来的 <input type=file>，按附近的文字说明它是传什么的
   const files = [...document.querySelectorAll('input[type="file"]')].map((e, i) => {
     e.setAttribute('data-annulo-file', String(i + 1))
@@ -133,7 +171,7 @@ const agentObserveJS = `(() => {
   const dialogs = [...document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i]')].filter(e => sized(e) && shown(e)).map(e => clip(e.innerText, 160)).filter(Boolean).slice(0, 4)
   const notices = [...document.querySelectorAll('[role="alert"],[class*="toast" i],[class*="message" i],[class*="notice" i],[class*="error" i],[class*="warn" i],[class*="tip" i]')]
     .filter(e => sized(e) && shown(e) && !e.querySelector(sel)).map(e => clip(e.innerText, 100)).filter(t => t && t.length > 1)
-  return JSON.stringify({ url: location.href, title: document.title, list, files, dialogs, notices: [...new Set(notices)].slice(0, 12),
+  return JSON.stringify({ url: location.href, title: document.title, list, rows: rows.slice(0, 60), files, dialogs, notices: [...new Set(notices)].slice(0, 12),
     scroll: { y: Math.round(scrollY), height: document.documentElement.scrollHeight, view: vh } })
 })()`
 

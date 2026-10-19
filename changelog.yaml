@@ -4,6 +4,9 @@
 # Annulo release notes, newest first: each entry has a version plus one single-line note per language.
 # Write "version: next" for the coming release; make release swaps in the real version.
 
+- version: 2026.10.19-2
+  zh: "抖音发布、删除也交给浏览器助手看着页面做；它能认出列表里每个按钮属于哪一条，删作品不再点错、兜圈。"
+  en: "Douyin publishing and deleting are handed to the browser assistant too; it now tells which list row each button belongs to, so deleting no longer goes around in circles."
 - version: 2026.10.19-1
   zh: "浏览器助手能看到只有图标的按钮（⋮、×），悬停会真的移鼠标；知乎发布、删除和 B站 删除稿件也交给它做了。"
   en: "The browser assistant now sees icon-only buttons (⋮, ×) and really moves the mouse to hover; Zhihu publishing and deleting, and deleting Bilibili videos, are handed to it too."

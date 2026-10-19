@@ -45,12 +45,13 @@ func (s *Server) creghtHost() string {
 	return creght.NormHost(s.cfg.Creght)
 }
 
-// apiCreghtClusterGet：能选的集群和现在用的（Hidden 的集群只在正在用时列出）。
+// apiCreghtClusterGet：能选的集群和现在用的（Hidden 的集群只在正在用、或 ?include= 点名时列出：annulo:// 链接里写的 talizen.com 要认得）。
 func (s *Server) apiCreghtClusterGet(w http.ResponseWriter, r *http.Request) {
 	cur := s.loginHost()
+	include := creght.NormHost(r.URL.Query().Get("include"))
 	var shown []creght.Cluster
 	for _, c := range creght.AllClusters() {
-		if !c.Hidden || c.Host == cur {
+		if !c.Hidden || c.Host == cur || c.Host == include {
 			shown = append(shown, c)
 		}
 	}

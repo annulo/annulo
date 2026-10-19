@@ -305,3 +305,37 @@ export async function run(input: { url: string }, ctx: any) {
 		t.Fatalf("%v", out)
 	}
 }
+
+// 列表页：每行的按钮都只写「删除」，要靠行里的标题认出是哪一条
+const listPage = `<!doctype html><body><h1>作品管理</h1>
+<div class="list">
+  <div class="card"><div class="cover">04:09</div><div class="title">第一条作品</div><div class="date">2026-10-18</div><div class="ops"><button>编辑</button><button>删除</button></div></div>
+  <div class="card"><div class="cover">03:55</div><div class="title">第二条作品</div><div class="date">2026-10-19</div><div class="ops"><button>编辑</button><button>删除</button></div></div>
+</div><button>导出</button></body>`
+
+func TestAgentObserveRows(t *testing.T) {
+	needChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(listPage)) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	h := host(dir, &memDB{rows: map[string][]map[string]any{}})
+	h.Browser = testBrowser{browser.NewManager(t.TempDir(), nil)}
+	write(t, dir, "rows.ts", `
+export async function run(input: { url: string }, ctx: any) {
+  const b = await ctx.browser.open({ profile: 'demo', url: input.url })
+  const page = await b.observe()
+  const rowText = (id: number) => page.rows.find((r: any) => r.id === id)?.text
+  return page.list.map((e: any) => [e.text, e.row ? rowText(e.row) : ''])
+}
+`)
+	res, err := Run(context.Background(), h, "rows.run", map[string]any{"url": srv.URL + "/"}, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprint(res)
+	for _, want := range []string{"[删除 04:09 · 第一条作品 · 2026-10-18]", "[删除 03:55 · 第二条作品 · 2026-10-19]", "[导出 ]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("want %s in %s", want, got)
+		}
+	}
+}

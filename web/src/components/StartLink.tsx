@@ -46,7 +46,7 @@ export default function StartLink() {
   const { connect, waiting, url, err: connectErr } = useCreghtConnect()
 
   const load = () =>
-    Promise.all([getJSON<ClusterState>('settings/creght'), getJSON<SetupState>('setup')])
+    Promise.all([getJSON<ClusterState>('settings/creght' + (cluster ? '?include=' + encodeURIComponent(cluster) : '')), getJSON<SetupState>('setup')])
       .then(([c, s]) => {
         setCl(c)
         setSt(s)

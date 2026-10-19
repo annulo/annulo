@@ -17,7 +17,7 @@
 (function () {
   var INTRO = [
     'You operate a web page in a real browser to finish one task for a script. Each turn you get the task, notes from earlier runs, the tools and files you may use, what you did so far, and the current page:',
-    'numbered elements (with the form field each belongs to, * for required, current value), file inputs, open dialogs and notices.'
+    'numbered elements (with the form field each belongs to, * for required, current value, and the list row it sits in), the text of list rows, file inputs, open dialogs and notices.'
   ].join('\n')
   var TOOL_MODE = [
     'Act by calling the tools. Call several in one turn when you can: they run in order (the browser does them one by one, at most 12 per turn), then you see the page again.',
@@ -101,6 +101,7 @@
     if (e.hover) p.push('shows-on-hover')
     if (e.dialog) p.push('in-dialog')
     if (e.disabled) p.push('disabled')
+    if (e.row) p.push('row=' + e.row)
     return p.join(' ')
   }
   // 取回复里第一个完整的 JSON 对象（模型有时一次回好几个，把后面几轮也「预演」了：只认第一个）
@@ -390,6 +391,7 @@
         page.dialogs.length ? 'Open dialogs:\n' + page.dialogs.map(function (d) { return '- ' + d }).join('\n') : '',
         page.notices.length ? 'Notices on the page:\n' + page.notices.map(function (d) { return '- ' + d }).join('\n') : '',
         page.files.length ? 'File inputs:\n' + page.files.map(function (f) { return '[' + f.id + '] accept=' + JSON.stringify(f.accept) + (f.multiple ? ' multiple' : '') + ' near=' + JSON.stringify(f.near) }).join('\n') : '',
+        page.rows && page.rows.length ? 'List rows (the text of each row, for telling which row an element with row=<n> belongs to):\n' + page.rows.map(function (r) { return 'row ' + r.id + ': ' + r.text }).join('\n') : '',
         'Elements:\n' + page.list.map(describe).join('\n')
       ].filter(Boolean).join('\n\n')
       var reply = null, out = ''

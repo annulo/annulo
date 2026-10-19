@@ -185,4 +185,7 @@ package version
 // 51 b.agent 的 hover 真的移鼠标（:hover 才显示的菜单），页面快照收没有 href 的 <a> 和纯图标按钮（图标的 class 名当说明）。
 //
 //	B站 删除稿件（悬停「⋮」出菜单）要它；插件的 min_annulo_api 跟着调到 51。
-const API = 51
+//
+// 52 b.agent 看页面时带上列表的行：每个元素标它在哪一行（作品卡片、表格行），行里不能点的字（标题、日期）单独列出来，
+//	AI 才分得出哪个「删除」是哪一条（抖音作品管理）；插件的 min_annulo_api 跟着调到 52。
+const API = 52
