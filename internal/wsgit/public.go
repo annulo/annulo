@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	cr "github.com/annulo/annulo/internal/creght"
@@ -34,10 +35,32 @@ func versionsPublic(ctx context.Context, t Template) ([]Version, error) {
 	}
 	vs := make([]Version, 0, len(list))
 	for _, v := range list {
-		vs = append(vs, Version{No: v.VersionNo, Note: v.Note, CreatedAt: v.CreatedAt.Format("2006-01-02T15:04:05Z07:00")})
+		vs = append(vs, Version{No: v.VersionNo, Label: v.Tag, Note: v.Note, CreatedAt: v.CreatedAt.Format("2006-01-02T15:04:05Z07:00")})
 	}
 	sort.Slice(vs, func(i, j int) bool { return vs[i].No > vs[j].No })
+	// 升级说明按语言从最新一版的 changelog.yaml 取（见 changelog.go）；没有这个文件（平台回 404）、平台还没有这个接口就用版本说明。
+	// changelog 的 version 对版本的标签（v135），没打标签的老版本对版本号：同一份模板发在几个集群，版本号各数各的，标签一样
+	if len(vs) > 0 {
+		if body, err := cr.NewClient(templateHost(t)).SiteFileAt(ctx, pid, sid, vs[0].No, changelogFile); err == nil {
+			log := parseChangelog([]byte(body), creghtVersionNo)
+			for i := range vs {
+				k := vs[i].No
+				if n, ok := creghtVersionNo(vs[i].Label); ok {
+					k = n
+				}
+				if s := pickNote(log[k]); s != "" {
+					vs[i].Note = s
+				}
+			}
+		}
+	}
 	return vs, nil
+}
+
+// creghtVersionNo 认 changelog 的 version 和版本标签：135、v135。
+func creghtVersionNo(s string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(s), "v"))
+	return n, err == nil && n > 0
 }
 
 // pullVersionPublic 把模板第 n 版的文件写进 t.Cache（目录里只留这一版的文件），记下版本号（cachedVersion 读它）。

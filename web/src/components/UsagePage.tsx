@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, type UsageDay, type UsageReport } from '@/lib/api'
 import { fmtTokens } from '@/lib/format'
 import { RangeToggle, Skeleton } from '@/components/ui/controls'
@@ -94,8 +94,8 @@ export default function UsagePage() {
 
 function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border border-border bg-background p-4">
-      <div className="mb-3 flex items-center justify-between gap-4">
+    <section className="min-w-0 rounded-xl border border-border bg-background p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <h4 className="text-sm font-semibold">{title}</h4>
         {aside}
       </div>
@@ -245,9 +245,17 @@ function Heatmap({ data }: { data: UsageDay[] }) {
       }
     }
   }
+  // 格子最小 8px，一年 53 周在手机上放不下：自己横向滚，打开时停在最右边（最近的日子），不把整页撑宽
+  const scroller = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = scroller.current
+    if (el) el.scrollLeft = el.scrollWidth
+  }, [cell, data.length])
   return (
     <div ref={ref} className="relative" onMouseLeave={() => setHover(null)}>
-      <div className="relative mb-1.5 h-4 text-[11px] text-muted-foreground" style={{ marginLeft: labelW }}>
+      <div ref={scroller} className="scroll-thin overflow-x-auto">
+      <div style={{ width: labelW + weeks * (cell + gap) }}>
+      <div className="relative mb-1.5 h-4 text-[11px] whitespace-nowrap text-muted-foreground" style={{ marginLeft: labelW }}>
         {months.map((m) => (
           <span key={m.col} className="absolute" style={{ left: m.col * (cell + gap) }}>
             {m.label}
@@ -275,6 +283,8 @@ function Heatmap({ data }: { data: UsageDay[] }) {
             />
           ))}
         </div>
+      </div>
+      </div>
       </div>
       <div className="mt-3 flex items-center justify-end gap-1.5 text-[11px] text-muted-foreground">
         {t('少')}

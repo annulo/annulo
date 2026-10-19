@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
-
-	"github.com/sky-valley/pi/agent"
 )
 
 // 对话历史：每段对话一个 JSONL 文件 ~/.shuttle/workspaces/<项目>/chats/<id>.jsonl，只追加不改写，一行一条记录：
@@ -354,7 +352,7 @@ func (a *Agent) GenerateTitle(ctx context.Context, first string) (string, error)
 		first = string(r[:800])
 	}
 	_, model := a.TitleSettings()
-	out, err := a.complete(ctx, titleSystem, "用户的第一句话：\n"+first, model, agent.ThinkOff)
+	out, err := a.complete(ctx, titleSystem, "用户的第一句话：\n"+first, model, smallThinking(a.SmallThinking("title")))
 	if err != nil {
 		return "", err
 	}

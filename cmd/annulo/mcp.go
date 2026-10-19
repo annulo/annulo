@@ -93,6 +93,9 @@ func mcpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if st.managed(name) {
+				return st.managedErr(name)
+			}
 			if _, ok := servers[name]; ok && !force {
 				return i18n.Errorf("已经有叫 %s 的 MCP 了：要换掉就加 --force，或者先 annulo mcp remove %s", "There's already an MCP named %s: add --force to replace it, or run annulo mcp remove %s first", name, name)
 			}
@@ -123,6 +126,9 @@ func mcpCmd() *cobra.Command {
 			if _, ok := servers[args[0]]; !ok {
 				return i18n.Errorf("没有叫 %s 的 MCP", "No MCP named %s", args[0])
 			}
+			if st.managed(args[0]) {
+				return st.managedErr(args[0])
+			}
 			delete(servers, args[0])
 			if _, err := mcpSave(cfg, servers); err != nil {
 				return err
@@ -143,6 +149,7 @@ type mcpState struct {
 		Status    string `json:"status"`
 		Error     string `json:"error"`
 		AuthURL   string `json:"auth_url"`
+		Managed   bool   `json:"managed"`
 		Tools     []struct {
 			Name    string `json:"name"`
 			Enabled bool   `json:"enabled"`
@@ -154,9 +161,23 @@ func mcpURL(p string) string {
 	cfg, err := config.Load()
 	addr := "127.0.0.1:0"
 	if err == nil {
-		addr = cfg.Addr()
+		addr = cfg.LocalAddr()
 	}
 	return fmt.Sprintf("http://%s/_shuttle/api/settings/mcp%s", addr, p)
+}
+
+func (st *mcpState) managed(name string) bool {
+	for _, s := range st.Servers {
+		if s.Name == name && s.Managed {
+			return true
+		}
+	}
+	return false
+}
+
+// managedErr：内置的（creght）跟着 设置 → 连接 走，不能换、不能删
+func (st *mcpState) managedErr(name string) error {
+	return i18n.Errorf("%s 是 Annulo 内置的 MCP，跟着 设置 → 连接 里的 creght 走，不能换掉或删掉；不想用可以在 设置 → MCP 里停用", "%s is a built-in Annulo MCP that follows creght in Settings → Connections; it can't be replaced or removed. Turn it off in Settings → MCP if you don't want it", name)
 }
 
 func mcpGet() (*mcpState, error) {

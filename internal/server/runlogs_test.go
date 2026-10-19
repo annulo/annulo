@@ -12,7 +12,7 @@ import (
 
 func TestRunLogsProjectIsolation(t *testing.T) {
 	dir := t.TempDir()
-	s := &Server{cfg: &config.Config{Dir: dir}, ws: &creght.Workspace{ProjectID: "p1"}}
+	s := newTestServer(&config.Config{Dir: dir}, &creght.Workspace{ProjectID: "p1"}, nil)
 	for _, project := range []string{"p1", "p2"} {
 		d := filepath.Join(dir, "logs", "local", project)
 		os.MkdirAll(d, 0700)

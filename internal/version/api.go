@@ -113,4 +113,73 @@ package version
 // 33 离线项目上传的文件地址改成不带端口的 /_annulo/uploaded/<文件>（端口会变；老数据里带端口的完整地址照样认）：
 //
 //	ctx.fetch、b.upload、图片代理都认这种地址；annulo upload <文件…> 命令把本机文件传进当前项目拿地址（和 local/upload 同一条路）。
-const API = 33
+// 34 模板 annulo.json 的 "plugins_min": {"<插件 id>": "0.5.0"}：这一版模板要的插件最低版本（模板页面 import 了插件新版才有的文件时写）。
+//
+//	升级模板、换模板、恢复模板文件之前，项目装的插件低于它就先升到最新（插件还没发那一版、升级有冲突时拒绝合并模板）；
+//	GET template 返回 plugin_needs，升级卡片和 annulo template 提示会先装、先升哪些插件。老版本 Annulo 不认这个字段，
+//	所以写了 plugins_min 的模板要把 min_annulo_api 调到 34，免得老版本只升模板不升插件、页面编译不过。
+// 35 local/run 可以带 "browser": "offscreen"：这次运行要无界面打开的浏览器改用屏幕外的真窗口；
+//
+//	POST local/runs/<id>/show 把这次运行正开着的浏览器窗口调到前台（后台发布的「在前台看」）。
+//	模板不用调 min_shuttle_api：老版本 Annulo 不认 browser 字段照常无界面跑，show 返回 404，页面提示先更新 Annulo。
+// 36 浏览器助手 b.act(goal, { until, avoid, maxSteps })：脚本卡住的一步交给模型看页面帮一下（docs/browser-act.md），
+//
+//	模型用 设置 → 模型 里的「浏览器助手用的模型」。插件调用前检查 b.act 存在，老版本没有就照原来报错，不用调最低版本。
+// 37 schedules/<id>.json 的 due：{ "fn", "input": { "post_id": "$id" }, "due": { "table", "field", "where", "filter" } }，
+//
+//	按表里的时间字段到点逐行跑 fn（排期发布这类），同一行的同一个时间只跑一次（internal/server/schedule_due.go）。
+//	用到它的模板、插件要把最低版本调到 37：老版本 Annulo 读到 due 会报「要写 every 或 at」，整个 schedules/ 都不跑。
+// 38 ctx.upload({ url, name })：本机函数下载一个网址存成运营后台的素材（离线存本机、在线传站点的 creght 素材，和页面上传 local/upload 同一条路），
+//
+//	返回 { url, size, content_type, existed }。导入外部文档（Notion 的图片地址几分钟就失效）时把图片换成长期地址。
+//	用到它的插件、模板要把最低版本调到 38：老版本没有 ctx.upload，调用会报 not a function。
+// 39 设置 → 连接 支持 Facebook Business Login：ctx.oauth('facebook', { account }) 返回长期 User token，
+//
+//	ctx.oauth.accounts('facebook') 列出已授权的 Facebook 用户 ID；到期后明确提示重新连接。
+//	插件用到 Facebook 官方授权通道时，最低能力版本要调到 39。
+// 40 ctx.llm({ prompt, system, provider, model, web_search })：provider / model 指定这次用哪个模型（provider 空时 model 是
+//
+//	ctx.llm.providers() 里的模型 id；给了 provider 时 model 是模型名，没登记的也能用）；web_search: true 让模型联网搜索后回答，
+//	返回 { text, sources: [{ url, title }], searches: [{ type, queries, url, sources }], tokens, model }。
+//	接口服务商走 OpenAI Responses 的 web_search，本机的 Claude Code / Codex 用它们自己的搜索；ctx.llm.providers() 里本机 agent
+//	的模型 web_search 是 true。用到这些选项的模板、插件要把最低版本调到 40：老版本忽略这些选项，返回的是文字。
+// 41 ctx.browser.open({ profile: '@user' })：经用户 Chrome 里的 Annulo 插件，在用户自己的浏览器里操作（用的是用户已经登好的账号，
+//
+//	docs/browser-extension.md）；'@user/<id>' 指定一个 Chrome profile，ctx.browser.user() 列出连着的 profile。
+//	用到它的模板、插件要把最低版本调到 41：老版本不认 '@user'，报 profile 名不对。
+// 42 annulo upload --local <文件…>：助手把做好的文件（视频这类大文件）复制进项目的本机文件，打印 local:<name>（和页面 POST local/files 同一条路）；
+//
+//	本机文件超过 90 天、但业务表里还引用着（local:<name> 或预览地址）的不再清理。系统提示里加了工作文件放哪（不放项目目录）。
+//	任务里让助手用 --local 的模板要把最低版本调到 42：老版本没有这个参数，会传到云端素材。
+// 43 POST local/open 也认项目的本机文件 local:<name>，用系统程序打开（网页、图片、视频、音频、PDF…）；服务端部署时返回 { open_url } 让页面在新标签页打开。
+//
+//	本机文件（/_annulo/files/<name>）的响应带 CSP sandbox。用到「打开产物」的模板要把最低版本调到 43。
+// 44 业务表变了直接告诉页面：Annulo 每次写表（页面的 db/<表>、本机函数的 ctx.db、助手跑的 annulo run、定时任务）后合并 300ms，
+//
+//	经页面的推送连接发 { type: 'db', tables }，页面运行时转成 window 的 db:changed 事件（detail: { table, remote: true }），页面按表重读。
+//	外壳不再在助手一轮结束后按命令猜着发 shuttle:refresh；有不是页面自己写的变化时，运行时会给老模板补发一个 shuttle:refresh（带 tables）。
+//	按 db:changed 刷新的模板要把最低版本调到 44：老版本 Annulo 只在助手一轮结束时发 shuttle:refresh。
+// 45 引用 @<表>:<id>#<n>（docs/references.md）：POST refs/resolve 解析（表名、标题、缩略图）；对话里显示成标签；
+//
+//	发给助手的消息有引用时附上 <references>（主要字段、文件的本机路径，引用的图片附给模型）。表声明可选 title_field / files_field。
+//	模板放「复制引用」时把最低版本调到 45（老版本里引用就是一串文字，助手也能 db_query 自己查）。
+// 46 ctx.fs：本机函数读写项目的工作目录（本机 ~/Annulo/<项目名>，服务端部署 <数据目录>/work/<项目名>；internal/localfn/fs.go），
+//
+//	list / stat / read / write / mkdir / move / trash / copy（能从 local:<name> 复制进来）/ toLocal（存成本机文件）/ open；
+//	ctx.workspace.work_dir 是这个目录；页面用 /_annulo/work-files/<路径> 预览里面的文件。用到它的模板要把最低版本调到 46。
+//	ctx.fs.canOpen：能不能用系统程序打开（服务端部署是 false，页面改成新标签页打开预览地址）。
+//	服务端部署时派给节点的函数，b.upload 用到 local:<name> 会经节点通道从服务器分段取回来（以前节点上用不了 local:）。
+//
+// 47：页面给外壳发 { type: 'annulo:compose', text }（老名字 shuttle:compose）：右侧新开一段空对话，把 text 填进输入框、不发送。
+// 48 收件箱：项目在 inboxes/<id>.json 声明来源（现在只有 webhook，地址 /_inbox/<令牌>）、处理函数（handler，input 是整条事件）和收到时的通知
+//
+//	（POST 到密钥里存的机器人地址，{{路径}} 取事件字段）；GET local/inboxes 列出收件箱和地址。见 docs/inbox.md、internal/inbox。
+//	模板自带收件箱时把最低版本调到 48：老版本不认 inboxes/，不会收。
+// 49 b.show()：把本机函数正在用的浏览器窗口调到前台交给用户（脚本做到一半、剩下的只有人能做），之后函数失败时窗口留着；
+//
+//	后台无界面运行的调不出来，报错。插件用之前检查 typeof b.show === 'function'，不强求新版 Annulo。
+// 50 b.agent(task, { tools, files, avoid, notes })：浏览器助手看着页面完成一件事（填表、处理弹窗、多步流程），插件给工具、守关卡；
+//
+//	经验记在笔记里（插件自带 plugins/<插件>/notes/<名字>.md，项目自己的 user/notes/<插件>/<名字>.md），不做机械重放。见 docs/browser-agent.md。
+//	插件用之前检查 typeof b.agent === 'function'，老版本退回脚本流程。
+const API = 50

@@ -1,7 +1,7 @@
 // Package browser 是本机函数的浏览器（ctx.browser）：用用户电脑上装好的 Chrome（没有就用 Edge），
 // 通过 DevTools 协议（chromedp）自动操作网页。社媒发布、采集这类没有开放接口的平台都靠它。
 //
-// 每个 profile 一个持久的用户目录（~/.shuttle/browser/<profile>），一个账号一个 profile：
+// 每个 profile 一个持久的用户目录（~/.annulo/browser/<项目>/<profile>，按项目分开），一个账号一个 profile：
 // 用户在弹出的窗口里登录一次，登录态留在目录里，之后后台直接用。cookie 不导出、不上传。
 //
 // 用的是一个独立的 Chrome 实例，和用户日常开着的浏览器互不影响。
@@ -17,16 +17,20 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/annulo/annulo/internal/extbridge"
 	"github.com/annulo/annulo/internal/i18n"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
@@ -40,11 +44,36 @@ import (
 // DefaultTimeout 是单个操作（打开页面、等元素、点击…）默认最多等多久。
 const DefaultTimeout = 30 * time.Second
 
-var profileRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// profile 名：<名字>，或者按项目分开的 <项目 id>/<名字>（Annulo 跑本机函数时自动加上项目，见 server/browser.go）
+var profileRe = regexp.MustCompile(`^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63}/)?[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// profileName 是给人看的名字（去掉项目）
+func profileName(profile string) string { return path.Base(profile) }
+
+// profileDir 是 profile 的用户目录。按项目分开（<项目>/<名字>）以前浏览器都放在 <Dir>/<名字>，几个项目共用：
+// 这个项目第一次用到这个名字、老位置还有时，把老的挪过来（登录态跟着过来；别的项目再用这个名字就是新的空浏览器）。
+func (m *Manager) profileDir(profile string) string {
+	dir := filepath.Join(m.Dir, profile)
+	if !strings.Contains(profile, "/") {
+		return dir
+	}
+	m.moveMu.Lock()
+	defer m.moveMu.Unlock()
+	if _, err := os.Stat(dir); err == nil {
+		return dir
+	}
+	legacy := filepath.Join(m.Dir, profileName(profile))
+	if st, err := os.Stat(legacy); err == nil && st.IsDir() {
+		if os.MkdirAll(filepath.Dir(dir), 0o700) == nil {
+			os.Rename(legacy, dir) // 挪不动（比如老的还开着）就用新的空目录，重新登录
+		}
+	}
+	return dir
+}
 
 // Options 是打开浏览器的选项。
 type Options struct {
-	Profile string // 必填：~/.shuttle/browser/<profile>，一个账号一个
+	Profile string // 必填：<名字> 或 <项目>/<名字>（~/.annulo/browser/ 下的目录），一个账号一个
 	URL     string // 打开后直接去的地址，可以不填
 	// Show 弹出可见窗口（让用户扫码登录）。默认后台跑：--headless=new。
 	Show bool
@@ -52,17 +81,26 @@ type Options struct {
 	// 有些网站能认出 headless（渲染、字体、WebGL 的特征和有界面的不一样），被识别时改用这个。
 	Offscreen bool
 	KeepOpen  bool // 可见窗口由用户关闭，任务结束只归还操作权
+	// 用户自己的浏览器（Profile 是 @user）：这个网站还没允许过时，能不能弹窗问用户（页面上点的运行可以，后台定时任务不行）
+	AskGrant bool
+	Why      string // 问用户时说明是哪个操作要用
 }
 
 // Manager 管所有 profile：同一个 profile 同时只能被一个任务打开（Chrome 的用户目录只能给一个进程用）。
 type Manager struct {
-	Dir string // ~/.shuttle/browser
+	Dir string // ~/.annulo/browser
 	// CheckHost 检查要打开的地址能不能访问（不许本机、内网），nil 表示不检查（测试用）。
 	CheckHost func(host string) error
+	// Ext 连着用户 Chrome 里的 Annulo 插件：profile 是 @user 时用（user.go），nil 表示不支持
+	Ext *extbridge.Bridge
+	// Quiet 只给测试用：「可看」的浏览器（Offscreen、Show）也无界面跑，Reveal 只记成看过、不挪窗口不抢焦点。
+	// 测「交给人」「在前台看」这类流程时不在开发者屏幕上弹窗口
+	Quiet bool
 
-	mu   sync.Mutex
-	busy map[string]bool
-	kept map[string]*Page
+	mu     sync.Mutex
+	moveMu sync.Mutex // profileDir 挪老目录
+	busy   map[string]bool
+	kept   map[string]*Page
 }
 
 func NewManager(dir string, checkHost func(host string) error) *Manager {
@@ -85,10 +123,45 @@ func (m *Manager) CloseKept() {
 	wg.Wait()
 }
 
+// Keep 把任务开着、用户正看着的窗口留给用户（任务失败时调：好看卡在哪一步），不再随任务关掉：
+// 和 KeepOpen 的窗口一样，用户关窗口时释放 profile，同 profile 的下一个任务接管这个窗口。
+// 无界面的、用户没看过的、已经关了的不留，返回 false。
+func (m *Manager) Keep(p *Page) bool {
+	if p.headless || !p.seen.Load() || p.ctx.Err() != nil {
+		return false
+	}
+	if p.user != nil {
+		// 用户自己的浏览器：窗口交给用户（插件不再调试它），不占着，下一个任务另开窗口
+		p.user.ep.KeepForUser()
+		go p.Close()
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if k := m.kept[p.profile]; k != nil && k != p {
+		return false
+	}
+	m.kept[p.profile] = p
+	delete(m.busy, p.profile)
+	return true
+}
+
 // Acquire 取得一次独占操作权。用户保留的窗口直接复用，release 后继续留着。
 func (m *Manager) Acquire(o Options) (*Page, func(), error) {
 	if o.KeepOpen && !o.Show {
 		return nil, nil, i18n.New("保留窗口需要 show: true", "Keeping a window open requires show: true")
+	}
+	if IsUser(o.Profile) {
+		// 用户自己的浏览器不用排队：每次运行各开一个窗口，几个任务可以同时跑（独立 profile 要排队是因为 Chrome 的用户目录只能给一个进程用）
+		p, err := m.openUser(o)
+		if err != nil {
+			return nil, nil, err
+		}
+		if o.KeepOpen {
+			// 函数结束后窗口留给用户
+			return p, func() { p.user.ep.KeepForUser(); p.Close() }, nil
+		}
+		return p, func() { p.Close() }, nil
 	}
 	m.mu.Lock()
 	p := m.kept[o.Profile]
@@ -152,6 +225,15 @@ type Page struct {
 	alloc    context.CancelFunc
 	closeOne sync.Once
 
+	// headless 的浏览器没有窗口，Reveal 调不出来；Show / Offscreen 打开的是真窗口
+	headless bool
+	// refocus：一接上就把启动前在前台的应用切回来（macOS 上后台启动的「可看」浏览器：窗口留在别的窗口后面，不最小化）
+	refocus bool
+	// seen：窗口在用户眼前（Show 打开的，或者用户点过「打开看」）。任务失败时这种窗口留给用户看（Manager.Keep）
+	seen atomic.Bool
+	// user：用户自己的浏览器里 Annulo 开的标签页（user.go），独立 Chrome 是 nil
+	user *userTab
+
 	mu       sync.Mutex
 	listens  []string
 	pending  map[network.RequestID]*Response
@@ -210,10 +292,13 @@ const profileIDFile = "shuttle-profile-id"
 // 换了数据目录、电脑改了名、Shuttle 重装都不变，profile 目录没了（登录态也就没了）才没有。
 // 本机没有这个 profile 返回 ""。
 func (m *Manager) ProfileID(profile string) (string, error) {
+	if IsUser(profile) {
+		return m.userProfileID(profile)
+	}
 	if !profileRe.MatchString(profile) {
 		return "", i18n.Errorf("profile 名不对：%q（只能用小写字母、数字、- 和 _，比如 xiaohongshu 或 xiaohongshu-2）", "Invalid profile name: %q (use lowercase letters, digits, - and _, e.g. xiaohongshu or xiaohongshu-2)", profile)
 	}
-	dir := filepath.Join(m.Dir, profile)
+	dir := m.profileDir(profile)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return "", nil
 	}
@@ -237,6 +322,9 @@ func ensureProfileID(dir string) (string, error) {
 
 // Open 启动这个 profile 的浏览器。用完一定要 Close（本机函数结束时会自动关）。
 func (m *Manager) Open(o Options) (*Page, error) {
+	if IsUser(o.Profile) {
+		return m.openUser(o)
+	}
 	if !profileRe.MatchString(o.Profile) {
 		return nil, i18n.Errorf("profile 名不对：%q（只能用小写字母、数字、- 和 _，比如 xiaohongshu 或 xiaohongshu-2）", "Invalid profile name: %q (use lowercase letters, digits, - and _, e.g. xiaohongshu or xiaohongshu-2)", o.Profile)
 	}
@@ -247,7 +335,7 @@ func (m *Manager) Open(o Options) (*Page, error) {
 	m.mu.Lock()
 	if m.busy[o.Profile] || m.kept[o.Profile] != nil {
 		m.mu.Unlock()
-		return nil, i18n.Errorf("%s 的浏览器正在被另一个任务使用，等它跑完再试", "The %s browser is being used by another task; try again when it finishes", o.Profile)
+		return nil, i18n.Errorf("%s 的浏览器正在被另一个任务使用，等它跑完再试", "The %s browser is being used by another task; try again when it finishes", profileName(o.Profile))
 	}
 	m.busy[o.Profile] = true
 	m.mu.Unlock()
@@ -258,7 +346,7 @@ func (m *Manager) Open(o Options) (*Page, error) {
 		m.mu.Unlock()
 	}
 
-	dir := filepath.Join(m.Dir, o.Profile)
+	dir := m.profileDir(o.Profile)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		release()
 		return nil, err
@@ -267,6 +355,10 @@ func (m *Manager) Open(o Options) (*Page, error) {
 		release()
 		return nil, err
 	}
+	// 走到这里说明这个 profile 没被这个 Annulo 用着（busy、kept 都没有）：目录上要是还有 Chrome 在跑，
+	// 就是上次 Annulo 重启、崩溃时留下的（后台启动的 Chrome 不跟着 Annulo 退出）。先关掉它：
+	// 不然新的启动打不开（profile 被占）、或者被 Chrome 转进那个旧实例，在里面多开一个谁都管不着的空白窗口（2026-10-19）
+	killProfile(dir)
 	// 不用 chromedp 的默认参数：里面有 --enable-automation（页面上会出「受自动测试软件控制」，
 	// navigator.webdriver 也会是 true），这是网站识别自动化最直接的特征
 	opts := []chromedp.ExecAllocatorOption{
@@ -288,7 +380,13 @@ func (m *Manager) Open(o Options) (*Page, error) {
 		chromedp.Flag("password-store", "basic"),
 		chromedp.Flag("use-mock-keychain", true),
 	}
+	// 「可看」的浏览器（Offscreen）：要有真窗口（headless 没有窗口，调不出来），但平时不能出现在眼前、不能抢焦点。
+	// macOS 会把屏幕外的窗口挪回某块显示器（多显示器时就出现在别的屏幕上），exec 启动的 Chrome 还会跳到前台：
+	// 改用系统的「后台打开」（open -g）启动，窗口留在后面（launchBackground）；不最小化：缩进 Dock 的动画也会打扰用户。Windows / Linux 直接放到屏幕外
+	background := o.Offscreen && !o.Show && runtime.GOOS == "darwin" && !m.Quiet
 	switch {
+	case m.Quiet:
+		opts = append(opts, chromedp.Flag("headless", "new"), chromedp.Flag("hide-scrollbars", true), chromedp.Flag("mute-audio", true))
 	case o.Show:
 	case o.Offscreen:
 		opts = append(opts, chromedp.Flag("window-position", "-32000,-32000"))
@@ -297,23 +395,56 @@ func (m *Manager) Open(o Options) (*Page, error) {
 		// 还是被识别（登录后跳验证、接口返回异常）时改用 Offscreen
 		opts = append(opts, chromedp.Flag("headless", "new"), chromedp.Flag("hide-scrollbars", true), chromedp.Flag("mute-audio", true))
 	}
+	if background {
+		ws, err := launchBackground(exe, dir)
+		if err != nil {
+			killProfile(dir) // 这次启动出来、却没接上的 Chrome 也关掉，不留残局
+			release()
+			return nil, i18n.Errorf("启动 Chrome 失败：%v", "Failed to start Chrome: %v", err)
+		}
+		allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), ws, chromedp.NoModifyURL)
+		ctx, cancel := chromedp.NewContext(allocCtx)
+		p := &Page{m: m, profile: o.Profile, ctx: ctx, cancel: cancel, refocus: true, pending: map[network.RequestID]*Response{}, wake: make(chan struct{})}
+		p.alloc = func() {
+			allocCancel()
+			// open 启动的 Chrome 收到 Browser.close 只关窗口、应用还在（macOS）：按用户目录找到这个实例结束掉，下次才能再用这个 profile
+			killProfile(dir)
+			release()
+		}
+		return m.setup(p, ctx, o)
+	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
-	p := &Page{m: m, profile: o.Profile, ctx: ctx, cancel: cancel, pending: map[network.RequestID]*Response{}, wake: make(chan struct{})}
+	p := &Page{m: m, profile: o.Profile, ctx: ctx, cancel: cancel, headless: !o.Show && !o.Offscreen, pending: map[network.RequestID]*Response{}, wake: make(chan struct{})}
 	p.alloc = func() {
 		allocCancel()
 		release()
 	}
+	return m.setup(p, ctx, o)
+}
+
+// setup 是 Chrome 接上以后的初始化：开网络事件、去掉 headless 的痕迹、注入脚本、标签页关了就当浏览器关了、打开地址。
+func (m *Manager) setup(p *Page, ctx context.Context, o Options) (*Page, error) {
+	p.seen.Store(o.Show)
 	// 第一次 Run 启动浏览器；不能给它带超时的 ctx，否则超时时整个浏览器跟着被关掉
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		p.Close()
 		msg := err.Error()
 		if strings.Contains(msg, "ProcessSingleton") || strings.Contains(msg, "profile") && strings.Contains(msg, "in use") {
-			return nil, i18n.Errorf("%s 的浏览器已经在别处打开了（比如之前的登录窗口还没关），关掉再试", "The %s browser is already open elsewhere (e.g. an earlier sign-in window); close it and try again", o.Profile)
+			return nil, i18n.Errorf("%s 的浏览器已经在别处打开了（比如之前的登录窗口还没关），关掉再试", "The %s browser is already open elsewhere (e.g. an earlier sign-in window); close it and try again", profileName(o.Profile))
 		}
 		return nil, i18n.Errorf("启动 Chrome 失败：%v", "Failed to start Chrome: %v", err)
 	}
-	if !o.Show && !o.Offscreen {
+	if p.refocus {
+		// 后台启动的「可看」浏览器：把启动前在前台的应用切回来（Chrome 启动时抢了前台），Chrome 的窗口就留在它后面
+		if v, ok := backgroundFront.LoadAndDelete(filepath.Join(m.Dir, p.profile)); ok {
+			if app, _ := v.(string); app != "" && !strings.Contains(app, "Google Chrome") {
+				exec.Command("open", "-a", app).Run()
+			}
+		}
+		closeBlankTabs(ctx)
+	}
+	if p.headless {
 		// headless 的 UA 里带 HeadlessChrome，一眼就能认出来，换成正常的
 		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 			_, _, _, ua, _, err := cdpbrowser.GetVersion().Do(c)
@@ -384,6 +515,129 @@ func (p *Page) Close() error {
 	return nil
 }
 
+// launchBackground 在 macOS 上用「后台打开」启动 Chrome（open -g：不跳到前台、不抢焦点），返回浏览器级 WebSocket 地址。
+// open 拿不到进程的输出，调试端口让 Chrome 自己挑（--remote-debugging-port=0），从用户目录的 DevToolsActivePort 读。
+// 参数和 exec 启动的一样（见 Open）；-n 是另开一个实例，不和用户自己开着的 Chrome 混在一起。
+func launchBackground(exe, dir string) (string, error) {
+	app := filepath.Dir(filepath.Dir(filepath.Dir(exe))) // …/Google Chrome.app/Contents/MacOS/Google Chrome → …/Google Chrome.app
+	port := filepath.Join(dir, "DevToolsActivePort")
+	os.Remove(port)
+	args := []string{"-g", "-n", "-a", app, "--args",
+		"--user-data-dir=" + dir, "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--window-size=1280,900",
+		"--disable-blink-features=AutomationControlled", "--test-type", "--disable-features=Translate",
+		"--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+		"--disable-hang-monitor", "--disable-breakpad", "--password-store=basic", "--use-mock-keychain", "about:blank"}
+	front := frontApp()
+	if out, err := exec.Command("open", args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// open -g 拦不住：Chrome 建第一个窗口时会把自己调到前台。接上以后把原来在前台的应用切回来（Page.restoreFront）
+	backgroundFront.Store(dir, front)
+	for i := 0; i < 200; i++ {
+		if b, err := os.ReadFile(port); err == nil {
+			if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); len(lines) >= 2 {
+				return "ws://127.0.0.1:" + strings.TrimSpace(lines[0]) + strings.TrimSpace(lines[1]), nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return "", errors.New("Chrome did not start in 20 seconds")
+}
+
+// closeBlankTabs 关掉启动时 Chrome 自己开的空白标签页：后台启动（open -g … about:blank）后 chromedp 另开一个标签页来操作，
+// 原来那个 about:blank 一直留着，窗口调到前台（打开看、b.show）时用户看到两个标签页。只关空白的，不碰别的
+func closeBlankTabs(ctx context.Context) {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil || c.Browser == nil {
+		return
+	}
+	infos, err := chromedp.Targets(ctx)
+	if err != nil {
+		return
+	}
+	for _, t := range infos {
+		if t.Type == "page" && t.TargetID != c.Target.TargetID && (t.URL == "about:blank" || t.URL == "") {
+			target.CloseTarget(t.TargetID).Do(cdp.WithExecutor(ctx, c.Browser))
+		}
+	}
+}
+
+// killProfile 结束用这个用户目录的 Chrome（后台启动的实例；先礼后兵：TERM 等一会儿还在就 KILL）
+func killProfile(dir string) {
+	pat := "user-data-dir=" + regexp.QuoteMeta(dir) + "( |$)"
+	for i := 0; i < 20; i++ {
+		if exec.Command("pgrep", "-f", pat).Run() != nil {
+			return
+		}
+		sig := "-TERM"
+		if i >= 10 {
+			sig = "-KILL"
+		}
+		exec.Command("pkill", sig, "-f", pat).Run()
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// backgroundFront 记着后台启动 Chrome 前在前台的应用（用户目录 → 应用路径），接上以后切回去
+var backgroundFront sync.Map
+
+// frontApp 是现在在前台的应用的路径（lsappinfo，不用辅助功能权限）；读不到返回空
+func frontApp() string {
+	asn, err := exec.Command("lsappinfo", "front").Output()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command("lsappinfo", "info", "-only", "bundlepath", strings.TrimSpace(string(asn))).Output()
+	if err != nil {
+		return ""
+	}
+	// "LSBundlePath"="/Applications/iTerm.app"
+	if i := strings.Index(string(out), "=\""); i >= 0 {
+		return strings.TrimSuffix(strings.TrimSpace(string(out)[i+2:]), "\"")
+	}
+	return ""
+}
+
+// Reveal 把窗口挪回屏幕上、调到最前面（Offscreen 打开的窗口在屏幕外面，用户点「在前台看」时用）。
+// headless 的浏览器没有窗口，看不到：返回错误。
+func (p *Page) Reveal(parent context.Context) error {
+	if p.m != nil && p.m.Quiet && !p.headless {
+		p.seen.Store(true)
+		return nil
+	}
+	if p.headless {
+		return i18n.New("这个操作的浏览器在后台无界面运行，看不到", "This task's browser runs headless in the background, so there's nothing to show")
+	}
+	ctx, done := p.op(parent, 10*time.Second)
+	defer done()
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		t := chromedp.FromContext(c).Target
+		if t == nil {
+			return errors.New("no target")
+		}
+		id, _, err := cdpbrowser.GetWindowForTarget().WithTargetID(t.TargetID).Do(c)
+		if err != nil {
+			return err
+		}
+		// 先恢复成普通窗口（可能被最小化过），再挪到屏幕左上角附近
+		if err := cdpbrowser.SetWindowBounds(id, &cdpbrowser.Bounds{WindowState: cdpbrowser.WindowStateNormal}).Do(c); err != nil {
+			return err
+		}
+		if err := cdpbrowser.SetWindowBounds(id, &cdpbrowser.Bounds{Left: 80, Top: 60}).Do(c); err != nil {
+			return err
+		}
+		if err := page.BringToFront().Do(c); err != nil {
+			return err
+		}
+		// 激活这个标签页所在的窗口：Chrome 会把自己调到前台（macOS 上会激活 Chrome 这个应用）
+		return target.ActivateTarget(t.TargetID).Do(c)
+	}))
+	if err == nil {
+		p.seen.Store(true)
+	}
+	return p.explain(parent, ctx, err, i18n.T("显示浏览器窗口", "show the browser window"), 10*time.Second)
+}
+
 // op 给一个操作建上下文：默认 30 秒超时，调用方（本机函数被停止）取消时也跟着停。
 func (p *Page) op(parent context.Context, timeout time.Duration) (context.Context, func()) {
 	if timeout <= 0 {
@@ -399,9 +653,14 @@ func (p *Page) explain(parent, ctx context.Context, err error, what string, time
 	if err == nil {
 		return nil
 	}
+	if p.user != nil {
+		if why := p.user.ep.Gone(); why != "" {
+			return errors.New(why)
+		}
+	}
 	switch {
 	case p.ctx.Err() != nil:
-		return i18n.Errorf("%s 的浏览器已经关了（窗口被关掉，或者这个任务结束了）", "The %s browser was closed (the window was closed, or the task ended)", p.profile)
+		return i18n.Errorf("%s 的浏览器已经关了（窗口被关掉，或者这个任务结束了）", "The %s browser was closed (the window was closed, or the task ended)", profileName(p.profile))
 	case parent.Err() != nil:
 		return i18n.New("已停止", "Stopped")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -684,6 +943,14 @@ func (p *Page) pick(parent context.Context, sel, prop, whole string) (string, er
 }
 
 // URL 是当前页面的地址。
+// Profile 是这个浏览器用的 profile（一个账号一个）。
+func (p *Page) Profile() string {
+	if p.user != nil {
+		return "Chrome · " + p.user.conn.Name() // 用户自己的浏览器：显示 Chrome 里的 profile 名字，不显示插件 id
+	}
+	return profileName(p.profile)
+}
+
 func (p *Page) URL(parent context.Context) (string, error) {
 	var u string
 	err := p.run(parent, 0, i18n.T("读取地址", "Reading the URL"), chromedp.Location(&u))
@@ -769,7 +1036,7 @@ func (p *Page) Responses(parent context.Context, pattern string, min int, timeou
 		case <-parent.Done():
 			return nil, i18n.New("已停止", "Stopped")
 		case <-p.ctx.Done():
-			return nil, i18n.Errorf("%s 的浏览器已经关了", "The %s browser was closed", p.profile)
+			return nil, i18n.Errorf("%s 的浏览器已经关了", "The %s browser was closed", profileName(p.profile))
 		}
 	}
 }
@@ -786,6 +1053,16 @@ func (p *Page) matches(u string) bool {
 // onEvent 在收到响应头时记下匹配的请求，加载完再取响应体（取响应体不能在事件回调里同步做）。
 func (p *Page) onEvent(ev any) {
 	switch e := ev.(type) {
+	case *page.EventJavascriptDialogOpening:
+		// 「离开此网站？」（beforeunload）：任务要跳转就是要离开，自动点「离开」，不然跳转一直卡到超时。
+		// 常见于接管失败时留下的窗口（发帖框里还有上次的草稿）。alert / confirm 这类网站自己的提示不替用户点
+		if e.Type == page.DialogTypeBeforeunload {
+			go func() {
+				ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+				defer cancel()
+				chromedp.Run(ctx, page.HandleJavaScriptDialog(true))
+			}()
+		}
 	case *network.EventResponseReceived:
 		if e.Type != network.ResourceTypeXHR && e.Type != network.ResourceTypeFetch {
 			return
@@ -809,7 +1086,7 @@ func (p *Page) onEvent(ev any) {
 			chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 				b, err := network.GetResponseBody(e.RequestID).Do(c)
 				if err == nil {
-					r.Text = string(b)
+					r.Text = fixMojibake(string(b))
 				}
 				return err
 			}))

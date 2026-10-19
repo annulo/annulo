@@ -34,6 +34,8 @@ type TemplateState = {
   /** 这台 Annulo 的能力版本、最新那一版模板要求的能力版本（shuttle.json 的 min_shuttle_api） */
   api?: number
   requires?: number
+  /** 最新那一版模板要的插件版本（annulo.json 的 plugins_min）、项目现在不够的：升级时先装上、升上去；latest 比 min 低时插件还没发那一版，升不了 */
+  plugin_needs?: { id: string; name: string; min: number; min_label: string; base?: number; base_label?: string; latest?: number; latest_label?: string }[]
   /** 项目里和模板不一样的模板文件（改过的、删掉的），「恢复模板文件」用 */
   modified?: { path: string; deleted?: boolean }[]
 }
@@ -74,6 +76,9 @@ function handleResult(out: MergeOut, what: string) {
   else if (out.push_conflicts?.length) handOff(pushText(out.push_conflicts), t('解决推送的冲突'))
 }
 
+/** 模板合并前后会装上、升级插件（server/plugins.go installTemplatePlugins）：通知插件卡片重新读 */
+const pluginsChanged = () => window.dispatchEvent(new Event('shuttle:plugins-changed'))
+
 export default function TemplateCard() {
   const [st, setSt] = useState<TemplateState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -101,6 +106,7 @@ export default function TemplateCard() {
       // 合并进来了新代码：让外壳整页刷新左侧后台（App 监听 shuttle:reload-backend），不用用户自己去刷新
       if (out.result.status === 'merged') window.postMessage({ type: 'shuttle:reload-backend' }, location.origin)
       await load()
+      pluginsChanged()
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -125,6 +131,7 @@ export default function TemplateCard() {
       handleResult(out, t('换模板'))
       if (out.result.status === 'merged') window.postMessage({ type: 'shuttle:reload-backend' }, location.origin)
       await load()
+      pluginsChanged()
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -153,6 +160,7 @@ export default function TemplateCard() {
       if (out.result) handleResult({ result: out.result, push_conflicts: out.push_conflicts }, t('模板升级到 v{v} ', { v: out.result.to }))
       window.postMessage({ type: 'shuttle:reload-backend' }, location.origin)
       await load()
+      pluginsChanged()
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -172,10 +180,33 @@ export default function TemplateCard() {
       else if (out.push_error) setError(t('已撤销到本机，但推到预览失败：') + out.push_error)
       window.postMessage({ type: 'shuttle:reload-backend' }, location.origin)
       await load()
+      pluginsChanged()
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setRestoring(false)
+    }
+  }
+  // 合并停在冲突上（模板升级、装插件）：冲突文件直接用要合进来的新版，舍弃项目里的改动
+  const [takeOpen, setTakeOpen] = useState(false)
+  const [taking, setTaking] = useState(false)
+  const takeIncoming = async () => {
+    setTaking(true)
+    setError('')
+    try {
+      const r = await post('template/take-incoming', {})
+      const out = (await r.json()) as { done: boolean; push_error?: string; push_conflicts?: string[] }
+      setTakeOpen(false)
+      if (out.done) toast.success(t('冲突文件已换成新版，合并完成'))
+      if (out.push_conflicts?.length) handOff(pushText(out.push_conflicts), t('解决推送的冲突'))
+      else if (out.push_error) setError(t('已合并到本机，但推到预览失败：') + out.push_error)
+      window.postMessage({ type: 'shuttle:reload-backend' }, location.origin)
+      await load()
+      pluginsChanged()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setTaking(false)
     }
   }
   const toggle = (p: string) =>
@@ -193,6 +224,9 @@ export default function TemplateCard() {
   const others = (st.templates ?? []).filter((o) => o.key !== st.key)
   const target = others.find((o) => o.key === switchTo)
   const tooOld = !!(st.requires && st.api && st.requires > st.api)
+  const needs = st.plugin_needs ?? []
+  // 模板要的插件版本还没发：这次升级会被拒绝（服务端同样检查），等插件发版
+  const pluginBlocked = needs.some((n) => !!n.latest && n.latest < n.min)
   const modified = st.modified ?? []
   return (
     <div className="space-y-3 rounded-xl border border-border bg-background px-4 py-3">
@@ -217,6 +251,8 @@ export default function TemplateCard() {
           <span className="max-w-56 text-right text-xs text-muted-foreground">{st.versions_error}</span>
         ) : updates.length > 0 && tooOld ? (
           <span className="text-xs font-medium text-amber-600 dark:text-amber-400">{t('先更新 Annulo 才能升级')}</span>
+        ) : updates.length > 0 && pluginBlocked ? (
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-400">{t('等插件发新版才能升级')}</span>
         ) : updates.length > 0 ? (
           <Button size="sm" disabled={busy} onClick={upgrade}>
             {busy ? <Loader className="animate-spin" /> : <ArrowUpCircle />}
@@ -243,6 +279,19 @@ export default function TemplateCard() {
           {t('模板 v{v} 用到了新版 Annulo 才有的能力（需要能力版本 {need}，这台是 {have}）。先更新 Annulo（重新安装最新的 App），再回来升级。', { v: ver(updates[0].no, updates[0].label), need: st.requires ?? 0, have: st.api ?? 0 })}
         </p>
       )}
+      {!pending && updates.length > 0 && !tooOld && needs.length > 0 && (
+        <ul className="space-y-1 text-xs leading-relaxed">
+          {needs.map((n) =>
+            n.latest && n.latest < n.min ? (
+              <li key={n.id} className="text-amber-600 dark:text-amber-400">{t('这一版模板要插件「{name}」至少 v{min}，插件还没发这一版（最新 v{latest}）：等插件发版后再升级。', { name: n.name, min: n.min_label.replace(/^v/, ''), latest: (n.latest_label ?? '').replace(/^v/, '') })}</li>
+            ) : n.base ? (
+              <li key={n.id} className="text-muted-foreground">{t('这一版模板要插件「{name}」至少 v{min}：升级时会先把它从 v{from} 升到最新。', { name: n.name, min: n.min_label.replace(/^v/, ''), from: (n.base_label ?? '').replace(/^v/, '') })}</li>
+            ) : (
+              <li key={n.id} className="text-muted-foreground">{t('这一版模板要插件「{name}」：升级时会先装上。', { name: n.name })}</li>
+            ),
+          )}
+        </ul>
+      )}
       {!pending && updates.length > 0 && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">{t('升级会把模板的改动合进这个项目，项目自己改过的地方保留；两边改了同一处的，交给助手解决。合并后推到预览，正式环境不变。')}</p>
       )}
@@ -253,9 +302,27 @@ export default function TemplateCard() {
             <TriangleAlert className="size-3.5" /> {t('上次模板合并有冲突还没解决')}
           </div>
           <div className="text-muted-foreground">{st.conflicts?.join('、')}</div>
-          <Button size="sm" variant="outline" onClick={() => handOff(mergeText(t('模板'), st.conflicts ?? []), t('解决模板合并的冲突'))}>
-            <Sparkles /> {t('交给助手解决')}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => handOff(mergeText(t('模板'), st.conflicts ?? []), t('解决模板合并的冲突'))}>
+              <Sparkles /> {t('交给助手解决')}
+            </Button>
+            <Button size="sm" variant="outline" disabled={taking} onClick={() => setTakeOpen((v) => !v)}>
+              <RotateCcw /> {t('用新版覆盖')}
+            </Button>
+          </div>
+          {takeOpen && (
+            <div className="space-y-2 rounded-md border border-border bg-background px-3 py-2">
+              <p className="text-muted-foreground">{t('这些冲突文件直接换成要合进来的新版，项目在这些文件里的改动会被舍弃；换完合并就完成了。')}</p>
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={taking} onClick={takeIncoming}>
+                  {taking ? <Loader className="animate-spin" /> : <RotateCcw />} {t('确定覆盖 {n} 个文件', { n: st.conflicts?.length ?? 0 })}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={taking} onClick={() => setTakeOpen(false)}>
+                  {t('取消')}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {pushPending && (
@@ -344,9 +411,12 @@ export default function TemplateCard() {
       {restored && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span className="flex-1">{restored.pushed ? t('已恢复 {n} 个文件，已推到预览。', { n: restored.files.length }) : t('已恢复 {n} 个文件。', { n: restored.files.length })}</span>
-          <Button size="sm" variant="outline" disabled={restoring} onClick={undoRestore}>
-            {restoring ? <Loader className="animate-spin" /> : <Undo2 />} {t('撤销恢复')}
-          </Button>
+          {/* 升级冲突里只恢复了一部分：合并还停着、没有提交，撤销不了（剩下的冲突交给助手） */}
+          {restored.commit && (
+            <Button size="sm" variant="outline" disabled={restoring} onClick={undoRestore}>
+              {restoring ? <Loader className="animate-spin" /> : <Undo2 />} {t('撤销恢复')}
+            </Button>
+          )}
         </div>
       )}
       {done?.status === 'merged' && (

@@ -66,6 +66,12 @@ func (h *Hub) saveAuth(name string, a *savedAuth) {
 
 // Logout 删掉保存的授权，下次连接重新授权。
 func (h *Hub) Logout(name string) error {
+	h.mu.Lock()
+	managed := h.managed[name] != nil
+	h.mu.Unlock()
+	if managed {
+		return i18n.Errorf("%s 是 Annulo 内置的，跟着 设置 → 连接 走，不用单独授权", "%s is built into Annulo and follows Settings → Connections; it doesn't need its own authorization", name)
+	}
 	err := os.Remove(h.authFile(name))
 	if os.IsNotExist(err) {
 		return nil

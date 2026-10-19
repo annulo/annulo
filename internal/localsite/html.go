@@ -11,7 +11,14 @@ import (
 // 页面一开始就接管报错，记进 __TALIZEN_RENDER_ERRORS__（和平台运行时一样），Shuttle 的报错监控从这里读。
 const errorsScript = `<script>(function(){
   var list = window.__TALIZEN_RENDER_ERRORS__ = %s;
-  function push(source, message, detail){ list.push({ level: "error", source: source, message: String(message), detail: detail || "" }) }
+  // 热更新改了 hooks 时 React 会报一串 hooks 的错，运行时（runtime.go）正在判断要不要重新挂载：这时先暂存在 __SHUTTLE_HOLD__，
+  // 救回来了就丢掉，没救回来再记进列表。直接进列表的话，外壳可能在这几百毫秒里已经读走、提示「后台页面出错了」
+  function push(source, message, detail){
+    var item = { level: "error", source: source, message: String(message), detail: detail || "" };
+    var hold = window.__SHUTTLE_HOLD__;
+    if (hold && /hook|Should have a queue/i.test(item.message + " " + item.detail)) return hold.push(item);
+    list.push(item);
+  }
   // ResizeObserver loop …：浏览器的提示（回调里改了布局，通知推迟到下一帧），页面没坏，不算报错
   addEventListener("error", function(e){ if (/^ResizeObserver loop /.test(e.message || "")) return; if (e.error || e.message) push("window.error", e.message || e.error, e.error && e.error.stack) });
   addEventListener("unhandledrejection", function(e){ var r = e.reason; push("unhandledrejection", r && r.message ? (r.name || "Error") + ": " + r.message : r, r && r.stack) });

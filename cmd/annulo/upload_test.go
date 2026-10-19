@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,5 +39,28 @@ func TestUploadFile(t *testing.T) {
 	}
 	if _, err := uploadFile(srv.URL, filepath.Dir(p)); err == nil {
 		t.Fatal("目录应该报错")
+	}
+}
+
+// annulo upload --local 把文件原样作为请求体发给 local/files，文件名在 X-Filename（URL 编码）
+func TestUploadLocalFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		name, _ := url.QueryUnescape(r.Header.Get("X-Filename"))
+		if r.Header.Get("X-Shuttle") == "" || string(b) != "mp4-bytes" || name != "第 1 版.mp4" || r.Header.Get("Content-Type") != "video/mp4" {
+			http.Error(w, `{"error":"bad request"}`, 400)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ref": "local:abc.mp4", "url": "/_annulo/files/abc.mp4", "size": len(b)})
+	}))
+	defer srv.Close()
+	p := filepath.Join(t.TempDir(), "第 1 版.mp4")
+	os.WriteFile(p, []byte("mp4-bytes"), 0o600)
+	r, err := uploadLocalFile(srv.URL, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Ref != "local:abc.mp4" || r.Size != 9 {
+		t.Fatalf("%+v", r)
 	}
 }

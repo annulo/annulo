@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, Check, GitBranch, HardDrive, Loader, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { getJSON, post } from '@/lib/api'
+import { followProject, getJSON, post } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/controls'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
 
-export type Backend = { project_id: string; site_id: string; name: string; created_at: string; local: boolean; current: boolean; template_base?: number; template_base_label?: string; template?: string; template_name?: string; template_latest?: number; offline?: boolean }
+export type Backend = { project_id: string; site_id: string; name: string; created_at: string; local: boolean; current: boolean; template_base?: number; template_base_label?: string; template?: string; template_name?: string; template_latest?: number; template_latest_label?: string; offline?: boolean }
 type Package = { id: number; name: string; price_by_month: number; price_by_year: number; currency: string }
 /** paid / entitled：付费模板、当前账号有没有权限 */
 type Template = { key: string; id: string; name: string; description: string; preview_url: string; source?: string; removable?: boolean; version?: number; paid?: boolean; entitled?: boolean; packages?: Package[]; subscribe_url?: string }
@@ -16,15 +16,16 @@ function priceText(p: Package) {
   const sym = p.currency === 'USD' ? '$' : '¥'
   return p.price_by_month ? t('{p}/月', { p: sym + p.price_by_month / 100 }) : t('{p}/年', { p: sym + p.price_by_year / 100 })
 }
-export type SetupState = { ready: boolean; step: string; error: string; logged_in: boolean; offline_mode?: boolean; api_host: string; dir: string; backends: Backend[]; templates: Template[] }
+export type SetupState = { ready: boolean; step: string; error: string; logged_in: boolean; offline_mode?: boolean; api_host: string; dir: string; backends: Backend[]; templates: Template[]; can_create?: boolean; server?: boolean }
 
 /** 项目基于模板哪个版本、能不能升级（升级在当前项目的模板卡片里点） */
 function TemplateTag({ b }: { b: Backend }) {
   const latest = b.template_latest
   const base = (b.template_base_label || String(b.template_base ?? '')).replace(/^v/, '')
+  const latestLabel = (b.template_latest_label || String(latest ?? '')).replace(/^v/, '')
   if (!b.local) return b.template_name ? <span>{b.template_name}</span> : null
-  if (!b.template_base) return <span>{b.template_name ? `${b.template_name} · ` : ''}{t('模板版本未记录')}{latest ? ` · ${t('可升级到 v{v}', { v: latest })}` : ''}</span>
-  if (latest && latest > b.template_base) return <span className="font-medium text-primary-text">{b.template_name ? `${b.template_name} ` : ''}{t('模板 v{v}', { v: base })} · {t('可升级到 v{v}', { v: latest })}</span>
+  if (!b.template_base) return <span>{b.template_name ? `${b.template_name} · ` : ''}{t('模板版本未记录')}{latest ? ` · ${t('可升级到 v{v}', { v: latestLabel })}` : ''}</span>
+  if (latest && latest > b.template_base) return <span className="font-medium text-primary-text">{b.template_name ? `${b.template_name} ` : ''}{t('模板 v{v}', { v: base })} · {t('可升级到 v{v}', { v: latestLabel })}</span>
   return <span>{b.template_name ? `${b.template_name} ` : ''}{t('模板 v{v}', { v: base })} · {t('最新')}</span>
 }
 
@@ -97,7 +98,8 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
     setBusy(key)
     setError('')
     try {
-      await post('setup', body)
+      const r = await post('setup', body)
+      if (await followProject(r)) return // 每个项目一个地址：跳到它
       await load()
       onDone()
     } catch (e) {
@@ -115,7 +117,8 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
       </div>
     )
 
-  const offlineNew = !st.logged_in || storage === 'offline'
+  // 服务端部署：项目都存在服务器上，没有「数据存在哪」可选
+  const offlineNew = !st.logged_in || storage === 'offline' || !!st.server
   const templates = st.templates
   const tpl = templates.find((x) => x.key === tplKey) ?? templates[0]
   const stepText = offlineNew ? t('正在新建…') : st.step === 'pulling' ? t('正在拉取到本地…') : t('正在复制模板…')
@@ -125,7 +128,7 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
             {!tpl && <p className="text-xs text-muted-foreground">{offlineNew ? t('没有可用的模板。') : t('这个 creght 区域还没有模板，新建项目要先换到 creght.cn（设置 → creght 区域）。')}</p>}
             {tpl && (
             <>
-            {st.logged_in && (
+            {st.logged_in && !st.server && (
               <div className="mb-3 space-y-1.5">
                 <div className="text-[13px] font-bold">{t('数据存在哪')}</div>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -157,7 +160,7 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
                 </div>
               </div>
             )}
-            {!st.logged_in && <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('新项目的数据都存在这台电脑上。')}</p>}
+            {!st.logged_in && !st.server && <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('新项目的数据都存在这台电脑上。')}</p>}
             <div className="text-[13px] font-bold">{t('选一个模板')}</div>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {templates.map((x) => {
@@ -302,19 +305,23 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
             )}
     </>
   )
+  // 服务端部署时只有管理员能新建（can_create: false）
+  const canCreate = st.can_create !== false
   return (
     <div className="space-y-5">
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <div className="text-xs font-semibold text-muted-foreground">{inline && st.backends.length === 0 ? t('新建项目') : t('你的项目')}</div>
-          {st.backends.length > 0 && (
+          <div className="text-xs font-semibold text-muted-foreground">{inline && st.backends.length === 0 && canCreate ? t('新建项目') : t('你的项目')}</div>
+          {st.backends.length > 0 && canCreate && (
             <Button size="sm" variant="outline" onClick={() => setCreating(true)} className="gap-1">
               <Plus className="size-3.5" />
               {t('新建项目')}
             </Button>
           )}
         </div>
-        {st.backends.length === 0 && inline ? (
+        {st.backends.length === 0 && !canCreate ? (
+          <p className="rounded-xl border border-dashed border-border bg-background px-4 py-8 text-center text-xs text-muted-foreground">{t('还没有项目：只有管理员能新建，请找管理员。')}</p>
+        ) : st.backends.length === 0 && inline ? (
           <div className="rounded-xl border border-border bg-background p-5">{createBody}</div>
         ) : st.backends.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border bg-background px-4 py-8 text-center">
@@ -363,15 +370,15 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
                         onClick={() => setEditing({ id: b.project_id, name: b.name })}
                         aria-label={t('给 {name} 改名', { name: b.name })}
                         title={t('改名')}
-                        className="rounded p-0.5 text-muted-foreground opacity-0 outline-none group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                        className="rounded p-0.5 text-muted-foreground opacity-0 outline-none group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:opacity-100"
                       >
                         <Pencil className="size-3" />
                       </button>
-                      {b.current && <span className="rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary-text">{t('正在使用')}</span>}
+                      {b.current && <span className="shrink-0 rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap text-primary-text">{t('正在使用')}</span>}
                     </div>
                   )}
-                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                    {b.offline ? (
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                    {b.offline && !st.server ? (
                       <span className="rounded bg-muted px-1.5 py-px font-semibold" title={t('离线项目：数据只在这台电脑上')}>
                         {t('离线')}
                       </span>
@@ -420,7 +427,7 @@ export default function BackendPicker({ onDone, inline = false }: { onDone: () =
                   }}
                 >
                   <p className="text-xs leading-relaxed text-muted-foreground">
-                    {b.offline ? t('离线项目只在这台电脑上：项目文件、业务数据和对话历史会挪到') : t('会删除 creght 上的这个项目：后台页面、业务数据、CMS 都没法恢复。本机的副本和对话历史会挪到')} <code className="font-mono">~/.annulo/trash</code>{t('。输入项目名「')}
+                    {st.server ? t('项目文件和对话历史会挪进服务器数据目录的 trash，业务数据留在数据库里') : b.offline ? t('离线项目只在这台电脑上：项目文件、业务数据和对话历史会挪到') : t('会删除 creght 上的这个项目：后台页面、业务数据、CMS 都没法恢复。本机的副本和对话历史会挪到')} {!st.server && <code className="font-mono">~/.annulo/trash</code>}{t('。输入项目名「')}
                     <span className="font-semibold text-foreground">{b.name}</span>{t('」确认：')}
                   </p>
                   <div className="flex items-center gap-1.5">

@@ -97,6 +97,40 @@ type AgentModel struct {
 	Error    string `json:"error"`
 }
 
+// LLMAsk 是 ctx.llm({ prompt, system, provider, model, web_search }) 带了 provider / model / web_search 时的请求。
+// provider 空时 model 是模型 id（ctx.llm.providers() 里模型的 id），两个都空用助手当前的模型；
+// 给了 provider 时 model 是这个服务商下的模型名，没登记的也能用，空 = 服务商默认的那个。
+type LLMAsk struct {
+	System    string
+	Prompt    string
+	Provider  string
+	Model     string
+	WebSearch bool // 让模型联网搜索后回答：接口服务商走 OpenAI Responses 的 web_search，本机 agent 用它自己的搜索
+}
+
+// LLMSource 是回答里引用的一个网址
+type LLMSource struct {
+	URL   string `json:"url"`
+	Title string `json:"title,omitempty"`
+}
+
+// LLMSearch 是模型的一次搜索：type 是 search（搜索）、open_page（打开网页）…，queries 搜了什么，sources 搜到的网址
+type LLMSearch struct {
+	Type    string   `json:"type"`
+	Queries []string `json:"queries"`
+	URL     string   `json:"url,omitempty"`
+	Sources []string `json:"sources"`
+}
+
+// LLMAnswer 是 ctx.llm 带 web_search 时的结果
+type LLMAnswer struct {
+	Text     string      `json:"text"`
+	Sources  []LLMSource `json:"sources"`  // 回答里引用的网址（引用注释 + 正文里写出来的链接），去重
+	Searches []LLMSearch `json:"searches"` // 搜索过程
+	Tokens   int         `json:"tokens"`   // 用了多少 token，拿不到是 0
+	Model    string      `json:"model"`    // 实际用的模型 id
+}
+
 type FetchRequest struct {
 	URL     string
 	Method  string
@@ -133,7 +167,12 @@ type Host struct {
 	// Download 把一个网址流式存进本机文件（b.upload 传网址时用：视频动辄几百 MB，不能像 fetch 那样读进内存），
 	// 返回 content-type。出网规则和 fetch 一样。nil 时 upload 退回用 Fetch（只能传 10MB 以内）
 	Download func(ctx context.Context, url, dst string) (contentType string, err error)
-	LLM      func(ctx context.Context, system, prompt string) (string, error) // ctx.llm
+	// Upload 是 ctx.upload 存文件的那一步：把下载好的文件存成运营后台的素材（和页面上传 local/upload 同一条路），
+	// 返回 { url, size, content_type, existed }。外部平台给的临时地址（Notion 的图几分钟就失效）要存下来才能放进文章
+	Upload func(ctx context.Context, name, contentType string, body []byte) (map[string]any, error)
+	LLM    func(ctx context.Context, system, prompt string) (string, error) // ctx.llm
+	// LLMAsk 是带 provider / model / web_search 的 ctx.llm：指定用哪个模型，或者让它联网搜索后回答（本机 agent 也行）
+	LLMAsk func(ctx context.Context, q LLMAsk) (*LLMAnswer, error)
 	// LLMProviders / LLMFetch 是 ctx.llm.providers() / ctx.llm.fetch(服务商, 路径, init)：用用户在 设置 → 模型 里配的服务商，
 	// 列表不含 key；fetch 和 fetch 一样（流式），r.URL 是接在服务商地址后面的路径，地址和鉴权由 Host 补
 	LLMProviders func(ctx context.Context) []map[string]any
@@ -147,17 +186,36 @@ type Host struct {
 	// AgentCurrent 是 ctx.agent.current()：助手当前用的模型，以及它能不能跑（ready=false 时 error 说明原因、去哪配）。
 	// 页面据此决定「交给助手」的按钮能不能用；外部 agent（Claude Code / Codex）也算
 	AgentCurrent func() AgentModel
-	// OAuth 是 ctx.oauth(provider, { account })：用户在 设置 → 连接 里授权过的账号（google…）的 access token，过期自动刷新。
+	// OAuth 是 ctx.oauth(provider, { account })：用户在 设置 → 连接 里授权过的账号（Google、Facebook 等）的 access token；按 provider 刷新或提示重连。
 	// 一种连接可以连多个账号，account 空是最早连的那个；OAuthAccounts 是 ctx.oauth.accounts(provider)，连上的账号名。
 	// 调哪个接口、怎么读数据写在本机函数里，Shuttle 只管授权和 token。
 	OAuth         func(ctx context.Context, provider, account string) (string, error)
 	OAuthAccounts func(provider string) ([]string, error)
 	// Browser 是 ctx.browser：用本机 Chrome 自动操作网页（见 browser.go）。
 	Browser BrowserHost
+	// BrowserLLM 是浏览器助手（b.act，见 act.go）调的模型：设置 → 模型 里选的「浏览器助手用的模型」，没选用对话的模型
+	BrowserLLM func(ctx context.Context, system, prompt string) (string, error)
+	// AgentTools 是 b.agent 用函数调用问模型（每个动作是一个工具，模型直接回结构化的调用）；
+	// 返回 ErrNoToolCalls（或者 nil）时 b.agent 退回 AgentLLM，让模型在文字里写 JSON
+	AgentTools func(ctx context.Context, system, prompt string, tools []AgentTool) (*AgentReply, error)
+	// AgentLLM 是 b.agent（agent.go）调的模型：设置里的浏览器助手模型（没选用对话的模型）、不思考。nil 时用 LLM
+	AgentLLM func(ctx context.Context, system, prompt string) (string, error)
+	// BrowserDebug 为 true 时 b.act 把每一步发给模型的内容、回复和耗时写进运行日志（设置 → 模型 → 浏览器助手的调试开关，每次现读）
+	BrowserDebug func() bool
+	// ActCache 是 b.act 记解法的文件（<数据目录>/cache/browser-act.json）；空就不记
+	ActCache string
 	// SnapshotDir 存浏览器操作失败时的现场（截图、可操作元素、源码，见 snapshot.go）；空就不存
 	SnapshotDir string
 	// FilesDir 是页面存在本机的文件（POST local/files）：b.upload 传 'local:<文件名>' 时从这里取
 	FilesDir string
+	// WorkFiles 是项目的工作目录（ctx.fs，见 fs.go）：本机 ~/Annulo/<项目名>，服务端部署 <数据目录>/work/<项目名>；空就没有 ctx.fs
+	WorkFiles string
+	// Open 用系统程序打开文件、reveal 时在访达里显示（ctx.fs.open）；服务端部署是 nil
+	Open func(path string, reveal bool) error
+	// LocalFile 把项目的本机文件（local:<name>）取到 dst：节点上跑的函数没有 FilesDir（文件在服务器上），b.upload 用到 local: 时经它从服务器分段取回来
+	LocalFile func(ctx context.Context, name, dst string) error
+	// NoExec：不给 ctx.exec（服务器派到节点上跑的函数：节点主人只借出浏览器和网络，不给执行命令）
+	NoExec bool
 }
 
 // Event 是运行过程中推给调用方的：progress / log。
@@ -328,15 +386,42 @@ func Run(ctx context.Context, h Host, name string, input any, emit func(Event)) 
 	if err != nil {
 		return nil, err
 	}
+	return runCode(ctx, h, name, filepath.Base(path), fn, code, input, emit)
+}
 
+// Bundle 把函数（文件.函数）所在的文件和它 import 的本地文件打成一份 JS（服务器派给节点跑时，节点没有项目副本）。
+func Bundle(workDir, name string) (string, error) {
+	file, _, ok := strings.Cut(name, ".")
+	if !ok {
+		return "", i18n.Errorf("函数名不对：%q", "Invalid function name: %q", name)
+	}
+	path, err := source(workDir, file)
+	if err != nil {
+		return "", err
+	}
+	return compile(path)
+}
+
+// RunCode 跑一份 Bundle 打好的代码里的函数（节点上）：name 是原来的「文件.函数」，只用来记日志和取导出名。
+func RunCode(ctx context.Context, h Host, name, code string, input any, emit func(Event)) (result any, runErr error) {
+	emit, finishLog := runLogger(h, name, emit)
+	defer func() { finishLog(runErr) }()
+	file, fn, ok := strings.Cut(name, ".")
+	if !ok || fn == "" {
+		return nil, i18n.Errorf("函数名不对：%q", "Invalid function name: %q", name)
+	}
+	return runCode(ctx, h, name, file, fn, code, input, emit)
+}
+
+func runCode(ctx context.Context, h Host, name, fileLabel, fn, code string, input any, emit func(Event)) (result any, runErr error) {
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	// 停止、超时：打断正在跑的 JS（阻塞在 fetch 里的也会因为 ctx 取消而返回）
 	stop := context.AfterFunc(ctx, func() { vm.Interrupt(i18n.T("已停止", "Stopped")) })
 	defer stop()
 
-	r := &runner{ctx: ctx, vm: vm, h: h, emit: emit}
-	defer r.cleanup() // 关掉这次打开的浏览器、删掉临时文件
+	r := &runner{ctx: ctx, vm: vm, h: h, emit: emit, name: name}
+	defer func() { r.cleanup(runErr != nil) }() // 关掉这次打开的浏览器、删掉临时文件；失败时用户正看着的窗口留着
 	r.installGlobals()
 	exports, err := load(vm, code)
 	if err != nil {
@@ -344,7 +429,7 @@ func Run(ctx context.Context, h Host, name string, input any, emit func(Event)) 
 	}
 	f, ok := goja.AssertFunction(exports.Get(fn))
 	if !ok {
-		return nil, i18n.Errorf("%s 没有导出函数 %s", "%s doesn't export a function named %s", filepath.Base(path), fn)
+		return nil, i18n.Errorf("%s 没有导出函数 %s", "%s doesn't export a function named %s", fileLabel, fn)
 	}
 	res, err := f(goja.Undefined(), vm.ToValue(input), r.ctxObject())
 	if err != nil {
@@ -376,6 +461,9 @@ type runner struct {
 	nsnap int // 这次运行存了几份现场
 
 	bodies []*fetchBody // fetch 的响应体，结束时没读完的关掉
+
+	name      string        // 跑的是哪个函数（文件.函数，插件的带 插件/ 前缀）：b.agent 按它找插件的笔记
+	agentLoop goja.Callable // agent.js 编译好的循环（b.agent 第一次用时编译）
 }
 
 // throw 把 Go 错误变成 JS 异常，函数里可以 try/catch。
@@ -557,6 +645,8 @@ func (r *runner) ctxObject() *goja.Object {
 		return out
 	})
 	c.Set("mcp", mcpFn)
+	// await ctx.upload({ url, name })：下载这个网址，存成运营后台的素材，返回 { url, size, content_type, existed }（upload.go）
+	c.Set("upload", r.upload)
 	// await ctx.oauth('google', { account })：返回 access token，没连接就抛出（message 里说去哪连）；account 不给是最早连的账号。
 	// ctx.oauth.accounts('google')：这台电脑连着的账号名（邮箱），最早连的在前
 	oauth := r.vm.ToValue(func(provider string, opts map[string]any) *goja.Promise {
@@ -591,8 +681,11 @@ func (r *runner) ctxObject() *goja.Object {
 	}})
 	c.Set("browser", r.browserObject())
 	// await ctx.exec(命令, [参数…], { cwd, input, timeout, env })：跑本机的命令行工具（见 exec.go）
-	c.Set("exec", r.exec)
+	if !r.h.NoExec { // 节点上跑的函数没有 ctx.exec：不放这个属性，函数里 if (!ctx.exec) 能走自己的退路
+		c.Set("exec", r.exec)
+	}
 	c.Set("workspace", r.h.Workspace)
+	c.Set("fs", r.fsObject())
 	// ctx.locale：界面语言 zh / en（设置里的语言，跟随系统时按系统语言），给用户看的报错和说明按它出两种语言
 	c.Set("locale", i18n.Locale())
 	c.Set("chat_id", r.h.ChatID)
@@ -608,20 +701,42 @@ func (r *runner) ctxObject() *goja.Object {
 		}
 		return r.resolved(goja.Undefined())
 	})
-	// ctx.llm('问题') 或 ctx.llm({ system, prompt })：用当前模型答一次，不带工具、不进对话历史
+	// ctx.llm('问题') 或 ctx.llm({ system, prompt })：用当前模型答一次，不带工具、不进对话历史。
+	// 还能带 provider / model 指定模型（见 LLMAsk），带 web_search: true 时让模型联网搜索后回答，
+	// 返回 { text, sources, searches, tokens, model }（本机的 Claude Code / Codex 也能搜）；不带时照旧返回文字
 	llm := r.vm.ToValue(func(v goja.Value) *goja.Promise {
-		system, prompt := "", ""
+		var q LLMAsk
 		if o, ok := v.(*goja.Object); ok && o.ClassName() == "Object" {
-			if s := o.Get("system"); s != nil && !goja.IsUndefined(s) {
-				system = s.String()
+			str := func(k string) string {
+				if x := o.Get(k); x != nil && !goja.IsUndefined(x) && !goja.IsNull(x) {
+					return x.String()
+				}
+				return ""
 			}
-			if p := o.Get("prompt"); p != nil && !goja.IsUndefined(p) {
-				prompt = p.String()
+			q.System, q.Prompt, q.Provider, q.Model = str("system"), str("prompt"), str("provider"), str("model")
+			if x := o.Get("web_search"); x != nil {
+				q.WebSearch = x.ToBoolean()
 			}
 		} else {
-			prompt = v.String()
+			q.Prompt = v.String()
 		}
-		text, err := r.h.LLM(r.ctx, system, prompt)
+		if q.Provider != "" || q.Model != "" || q.WebSearch {
+			if r.h.LLMAsk == nil {
+				return r.rejected(i18n.New("这里的 ctx.llm 不能指定模型、不能联网搜索", "ctx.llm here can't pick a model or search the web"))
+			}
+			a, err := r.h.LLMAsk(r.ctx, q)
+			if err != nil {
+				return r.rejected(err)
+			}
+			if !q.WebSearch {
+				return r.resolved(a.Text)
+			}
+			var out map[string]any
+			b, _ := json.Marshal(a)
+			_ = json.Unmarshal(b, &out)
+			return r.resolved(out)
+		}
+		text, err := r.h.LLM(r.ctx, q.System, q.Prompt)
 		if err != nil {
 			return r.rejected(err)
 		}
@@ -974,13 +1089,20 @@ func jsError(err error, vals ...goja.Value) error {
 		if e.Message == "" {
 			e.Message = v.String()
 		}
+		e.Message = cleanMessage(e.Message)
 		return e
 	}
 	if v != nil {
-		return errors.New(v.String())
+		return errors.New(cleanMessage(v.String()))
 	}
 	return err
 }
+
+// goErrorNoise 是 Go 抛给 JS 的错误被转成字符串（String(e)、`${e}`）时带上的东西：开头的「GoError: 」和结尾的调用位置
+// （「 at github.com/annulo/annulo/internal/localfn.(*runner).pageObject.func21 (native)」）。脚本常把它包一层再抛，界面上只该看到那句话
+var goErrorNoise = regexp.MustCompile(`(?:GoError: )|(?:\s+at [\w./()*-]+ \(native\))`)
+
+func cleanMessage(m string) string { return strings.TrimSpace(goErrorNoise.ReplaceAllString(m, "")) }
 
 // toPlain 把 goja 导出的值转成能 JSON 序列化的普通值。
 func toPlain(v any) any {

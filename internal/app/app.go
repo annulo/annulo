@@ -4,8 +4,10 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/annulo/annulo/internal/config"
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localdb"
 	"github.com/annulo/annulo/internal/mcphub"
 	"github.com/annulo/annulo/internal/server"
 	"github.com/annulo/annulo/internal/version"
@@ -30,6 +33,9 @@ type Instance struct {
 	hub *mcphub.Hub
 	hs  *http.Server
 	ln  net.Listener
+	// 服务端部署的 HTTPS（cfg.TLSPort）：证书由 Annulo 自己签（server/domain.go）
+	hsTLS *http.Server
+	lnTLS net.Listener
 }
 
 // Start 准备好所有组件并开始监听（还没有开始处理请求，调 Serve）。webDir 非空时从这个目录提供前端（开发用）。
@@ -42,6 +48,20 @@ func Start(webDir string) (*Instance, error) {
 	ln, err := listen(cfg)
 	if err != nil {
 		return nil, err
+	}
+	// 服务端部署的业务表在 Postgres：先等它能连上（容器一起起来时数据库常晚几秒，docker stack deploy 也不管启动顺序）。
+	// 等不到也照样启动：用到业务表时会再试（server.cur），界面上报「数据库连不上」
+	if cfg.DatabaseURL != "" {
+		err := localdb.WaitPostgres(context.Background(), cfg.DatabaseURL, 2*time.Minute, func(err error) {
+			log.Printf("等 Postgres：%v", err)
+		})
+		if err != nil {
+			log.Printf("%v；先启动，用到业务表时再连", err)
+		}
+	}
+	// 早期的 <数据目录>/backend 挪进 backends/（端口占上了才挪：同一时间只有这一个服务在用项目目录）
+	if err := cfg.MigrateLegacyBackend(); err != nil {
+		log.Printf("把老的项目目录挪进 backends 失败，照旧用老位置：%v", err)
 	}
 	// 没有运营后台也照样启动：界面里有登录和初始化页面
 	var ws *creght.Workspace
@@ -78,7 +98,10 @@ func Start(webDir string) (*Instance, error) {
 		fmt.Fprintf(os.Stderr, "  ! 安装 skill 失败：%v\n", err)
 	}
 	hub := mcphub.New(cfg.Dir)
-	hub.CallbackURL = fmt.Sprintf("http://%s/_shuttle/oauth/callback", cfg.Addr())
+	hub.CallbackURL = fmt.Sprintf("http://%s/_shuttle/oauth/callback", cfg.LocalAddr())
+	if cfg.Server {
+		hub.CallbackURL = "" // 服务端部署：按请求的地址算（server.callbackURL），在 设置 → MCP 里连接时设上
+	}
 	srv := server.New(cfg, web, ws, ag, hub)
 	if err := hub.Reload(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! MCP 配置有误：%v\n", err)
@@ -86,7 +109,15 @@ func Start(webDir string) (*Instance, error) {
 	inst := &Instance{
 		URL: fmt.Sprintf("http://%s/", cfg.Addr()),
 		srv: srv, hub: hub, ln: ln,
-		hs: &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second},
+		hs: &http.Server{Handler: srv.HTTPHandler(), ReadHeaderTimeout: 10 * time.Second},
+	}
+	if tc := srv.TLSConfig(); tc != nil && cfg.TLSPort > 0 {
+		lnTLS, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Host, cfg.TLSPort))
+		if err != nil {
+			return nil, err
+		}
+		inst.lnTLS = tls.NewListener(lnTLS, tc)
+		inst.hsTLS = &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, TLSConfig: tc}
 	}
 	fmt.Printf("  ✓ Annulo %s\n", version.Version)
 	fmt.Printf("    运营后台  %s\n", inst.URL)
@@ -104,6 +135,13 @@ func Start(webDir string) (*Instance, error) {
 
 // Serve 处理请求，直到 Shutdown。
 func (i *Instance) Serve() error {
+	if i.hsTLS != nil {
+		go func() {
+			if err := i.hsTLS.Serve(i.lnTLS); err != nil && err != http.ErrServerClosed {
+				log.Printf("HTTPS 服务停了：%v", err)
+			}
+		}()
+	}
 	err := i.hs.Serve(i.ln)
 	if err == http.ErrServerClosed {
 		return nil
@@ -118,6 +156,9 @@ func (i *Instance) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	i.hs.Shutdown(ctx)
+	if i.hsTLS != nil {
+		i.hsTLS.Shutdown(ctx)
+	}
 	i.hub.Close()
 }
 

@@ -7,11 +7,11 @@ import (
 )
 
 func TestDBToolsSchema(t *testing.T) {
-	tools := (&Server{}).dbTools() // schema 写错会 panic
+	tools := (newTestServer(nil, nil, nil)).dbTools() // schema 写错会 panic
 	if len(tools) != 2 || tools[0].Parameters.Type != "object" {
 		t.Fatalf("tools: %+v", tools)
 	}
-	if _, err := (&Server{}).dbToolQuery(t.Context(), map[string]any{"table": "x"}); err == nil {
+	if _, err := (newTestServer(nil, nil, nil)).dbToolQuery(t.Context(), map[string]any{"table": "x"}); err == nil {
 		t.Fatal("没有项目时应该报错")
 	}
 }

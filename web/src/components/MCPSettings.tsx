@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge, Field, Input, Switch, Textarea } from '@/components/ui/controls'
 import { getJSON, post, type MCPServerConfig, type MCPServerStatus, type MCPState } from '@/lib/api'
 import { fmtTokens } from '@/lib/format'
+import { navigate } from '@/lib/router'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
 
@@ -183,22 +184,22 @@ function ServerCard({
   const target = cfg?.url ?? [cfg?.command, ...(cfg?.args ?? [])].filter(Boolean).join(' ')
   return (
     <div className="border-b border-border last:border-b-0">
-      <div className="flex items-center gap-3 px-4 py-3">
-        <button onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+        <button onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 basis-56 flex-wrap items-center gap-x-2 gap-y-1 text-left">
           <ChevronRight className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
           <span className="truncate text-[13px] font-bold">{s.name}</span>
-          <Badge>{s.transport === 'stdio' ? t('本地') : t('远程')}</Badge>
-          <span className={cn('inline-flex items-center gap-1.5 text-[11px]', st.ink)}>
+          <Badge>{s.managed ? t('内置') : s.transport === 'stdio' ? t('本地') : t('远程')}</Badge>
+          <span className={cn('inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap', st.ink)}>
             {s.status === 'connecting' ? <Loader2 className="size-3 animate-spin" /> : <span className={cn('size-1.5 rounded-full', st.dot)} />}
             {t(st.text)}
           </span>
           {s.status === 'connected' && (
-            <span className="text-[11px] text-muted-foreground tabular-nums">
+            <span className="text-[11px] whitespace-nowrap text-muted-foreground tabular-nums">
               {on.length === s.tools.length ? t('{n} 个工具', { n: s.tools.length }) : t('{on}/{n} 个工具', { on: on.length, n: s.tools.length })} · {t('约 {n} token', { n: fmtTokens(onTokens) })}
             </span>
           )}
         </button>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {s.auth_url && (
             <Button size="sm" asChild>
               <a href={s.auth_url} target="_blank" rel="noreferrer">
@@ -206,13 +207,16 @@ function ServerCard({
               </a>
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={() => onAction('reconnect', s.name)}>
-            {t('重连')}
-          </Button>
+          {/* 内置的（creght）跟着 设置 → 连接 走：连接失效在那里重新连，这里不重连、不删 */}
+          {!s.managed && (
+            <Button variant="ghost" size="sm" onClick={() => onAction('reconnect', s.name)}>
+              {t('重连')}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={onToggle}>
             {s.status === 'disabled' ? t('启用') : t('停用')}
           </Button>
-          <Button
+          {!s.managed && <Button
             variant="ghost"
             size="sm"
             onClick={() => (confirm ? onRemove() : setConfirm(true))}
@@ -220,10 +224,19 @@ function ServerCard({
             className={confirm ? 'text-destructive hover:text-destructive' : 'text-muted-foreground'}
           >
             {confirm ? t('确认删除') : t('删除')}
-          </Button>
+          </Button>}
         </div>
       </div>
-      {s.error && s.status === 'failed' && <div className="mx-4 mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs break-all text-destructive">{s.error}</div>}
+      {s.error && s.status === 'failed' && (
+        <div className="mx-4 mb-3 flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs break-all text-destructive">
+          <span className="min-w-0 flex-1">{s.error}</span>
+          {s.managed && (
+            <button onClick={() => navigate('settings', '#connections')} className="shrink-0 font-medium underline underline-offset-2">
+              {t('去连接')}
+            </button>
+          )}
+        </div>
+      )}
       {s.status === 'needs_auth' && (
         <div className="mx-4 mb-3 rounded-lg border border-input bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           {t('点「去授权」在浏览器里登录并同意，完成后这里会自动变成已连接。授权链接 10 分钟内有效，过期了点「重连」。')}
@@ -232,7 +245,8 @@ function ServerCard({
       {open && (
         <div className="space-y-3 px-4 pb-3 pl-[40px] text-xs">
           <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 font-mono break-all text-muted-foreground">{target}</div>
-          {s.authed && (
+          {s.managed && <div className="text-muted-foreground">{t('Annulo 内置：用 设置 → 连接 里 creght 的授权，连着哪个区域就是哪个区域的 MCP；断开 creght 后自动去掉。')}</div>}
+          {s.authed && !s.managed && (
             <div className="flex items-center gap-2 text-muted-foreground">
               {t('已保存 OAuth 授权')}
               <button onClick={() => onAction('logout', s.name)} className="font-medium text-primary-text hover:underline">

@@ -155,3 +155,74 @@ func TestCatalogDirs(t *testing.T) {
 		t.Fatalf("新版本里加的模板要列出来：%v", dirs)
 	}
 }
+
+// 一个仓库多个插件，每个目录自己打 <目录>/vX.Y.Z：版本、说明、文件、目录列表都按自己的 tag；没有自己 tag 的目录用仓库的 vX.Y.Z。
+func TestGitSubdirTags(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v：%s", args, out)
+		}
+	}
+	write := func(p, c string) {
+		os.MkdirAll(filepath.Dir(filepath.Join(repo, p)), 0o755)
+		os.WriteFile(filepath.Join(repo, p), []byte(c), 0o644)
+	}
+	run("init", "-q")
+	write("social/plugin.json", "{}")
+	write("social/a.ts", "1")
+	run("add", "-A")
+	run("commit", "-q", "-m", "social")
+	run("tag", "-a", "v0.7.0", "-m", "social 0.7")
+	write("docs/plugin.json", "{}")
+	write("docs/d.ts", "d1")
+	run("add", "-A")
+	run("commit", "-q", "-m", "docs")
+	run("tag", "-a", "docs/v0.1.0", "-m", "docs first")
+	write("legacy/plugin.json", "{}") // 没自己 tag、也不在仓库最新的 vX.Y.Z 里：不列
+	run("add", "-A")
+	run("commit", "-q", "-m", "legacy")
+
+	cache := t.TempDir()
+	tpl := func(sub string) Template {
+		return Template{Site: GitSite(repo, sub), Cache: filepath.Join(cache, "c-"+sub)}
+	}
+	ctx := context.Background()
+
+	dirs, err := CatalogDirs(ctx, tpl(""), "plugin.json")
+	if err != nil || strings.Join(dirs, ",") != "docs,social" {
+		t.Fatalf("目录列表：%v %v", dirs, err)
+	}
+	vs, err := versionsGit(ctx, tpl("docs"))
+	if err != nil || len(vs) != 1 || vs[0].Label != "v0.1.0" || vs[0].Note != "docs first" {
+		t.Fatalf("docs 只有自己的版本：%+v %v", vs, err)
+	}
+	if files, err := filesGit(ctx, tpl("docs"), vs[0].No); err != nil || files["d.ts"] != "d1" {
+		t.Fatalf("docs 的文件：%v %v", files, err)
+	}
+	if vs, _ := versionsGit(ctx, tpl("social")); len(vs) != 1 || vs[0].Label != "v0.7.0" {
+		t.Fatalf("social 还没有自己的 tag，用仓库的：%+v", vs)
+	}
+
+	// social 开始自己打 tag：social/v0.8.0 接着仓库的 v0.7.0（装着 0.7 的项目升级要拿 0.7 的文件做三方合并）
+	write("social/a.ts", "2")
+	run("add", "-A")
+	run("commit", "-q", "-m", "social 0.8")
+	run("tag", "-a", "social/v0.8.0", "-m", "social 0.8")
+	vs, _ = versionsGit(ctx, tpl("social"))
+	if len(vs) != 2 || vs[0].Label != "v0.8.0" || vs[1].Label != "v0.7.0" {
+		t.Fatalf("social 自己的版本接着老的：%+v", vs)
+	}
+	if files, _ := filesGit(ctx, tpl("social"), vs[1].No); files["a.ts"] != "1" {
+		t.Fatalf("social 0.7 的文件：%v", files)
+	}
+	if files, _ := filesGit(ctx, tpl("social"), vs[0].No); files["a.ts"] != "2" {
+		t.Fatalf("social 0.8 的文件：%v", files)
+	}
+	if vs, _ := versionsGit(ctx, tpl("docs")); len(vs) != 1 {
+		t.Fatalf("social 的 tag 不算 docs 的版本：%+v", vs)
+	}
+}

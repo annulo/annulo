@@ -61,25 +61,46 @@ func (s *Server) apiAssetUpload(w http.ResponseWriter, r *http.Request) {
 	if ctype == "" {
 		ctype = http.DetectContentType(b)
 	}
-	if s.ws.Offline {
-		a, err := s.saveOfflineAsset(name, ctype, b)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeJSON(w, a)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-	defer cancel()
-	a, err := creght.NewClient(s.ws.APIHost).UploadAsset(ctx, s.ws.ProjectID, s.ws.SiteID, name, ctype, b)
+	a, err := s.storeAsset(r.Context(), s.ws, name, ctype, b)
 	if err != nil {
 		code := http.StatusBadGateway
-		if errors.Is(err, creght.ErrNotLoggedIn) {
+		switch {
+		case s.ws.Offline:
+			code = http.StatusInternalServerError
+		case errors.Is(err, creght.ErrNotLoggedIn):
 			code = http.StatusUnauthorized
 		}
-		fail(w, code, i18n.Errorf("上传到 creght 失败：%w", "Upload to creght failed: %w", err))
+		fail(w, code, err)
 		return
 	}
 	writeJSON(w, a)
+}
+
+// storeAsset 把一个文件存成运营后台的素材，拿长期能用的地址：离线项目存本机，在线项目传到站点的 creght 素材。
+// 页面上传（local/upload）和本机函数的 ctx.upload 共用。
+func (s *Server) storeAsset(ctx context.Context, ws *creght.Workspace, name, ctype string, b []byte) (*creght.Asset, error) {
+	if ws.Offline {
+		return s.saveOfflineAsset(name, ctype, b)
+	}
+	if ws.ProjectID == "" || ws.SiteID == "" {
+		return nil, i18n.New("还没打开运营后台，不知道传到哪个站点", "No back office is open, so there's no site to upload to")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	a, err := creght.NewClient(ws.APIHost).UploadAsset(ctx, ws.ProjectID, ws.SiteID, name, ctype, b)
+	if err != nil {
+		return nil, i18n.Errorf("上传到 creght 失败：%w", "Upload to creght failed: %w", err)
+	}
+	return a, nil
+}
+
+// uploadHost 是 ctx.upload 存文件的那一步（下载在 localfn 里做）：存进 ws 这个项目的素材
+func (s *Server) uploadHost(ws *creght.Workspace) func(ctx context.Context, name, ctype string, b []byte) (map[string]any, error) {
+	return func(ctx context.Context, name, ctype string, b []byte) (map[string]any, error) {
+		a, err := s.storeAsset(ctx, ws, name, ctype, b)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"url": a.URL, "size": a.Size, "content_type": a.ContentType, "existed": a.Existed}, nil
+	}
 }

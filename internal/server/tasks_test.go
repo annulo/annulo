@@ -47,7 +47,7 @@ func TestParseSchedulesTask(t *testing.T) {
 
 func TestAPITasks(t *testing.T) {
 	ws := t.TempDir()
-	s := &Server{cfg: &config.Config{Dir: t.TempDir()}, ws: &creght.Workspace{Dir: ws, ProjectID: "p1"}}
+	s := newTestServer(&config.Config{Dir: t.TempDir()}, &creght.Workspace{Dir: ws, ProjectID: "p1"}, nil)
 	writeTask(t, ws, "weekly-report", "---\nname: 写周报\ndescription: 每周一期\n---\n\n先拿数字\n")
 
 	do := func(method, rest, body string) *httptest.ResponseRecorder {

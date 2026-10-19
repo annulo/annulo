@@ -206,12 +206,13 @@ func (s *Server) startTurn(chatID string, rawLast json.RawMessage, last uiMessag
 }
 
 // apiAgentResume：AI SDK 断线续传（useChat 的 resume）。有正在进行的一轮就从头回放已产生的分块、
-// 再接着推实时的；没有就 204。
+// 再接着推实时的；没有就 204。已经跑完的（回答落了历史、还在提交项目没撤掉）也 204：
+// 续传前界面刚重读过历史，里面已经有这条回答，再回放一遍会出现两份。
 func (s *Server) apiAgentResume(w http.ResponseWriter, r *http.Request, chatID string) {
 	s.runsMu.Lock()
 	run := s.runs[chatID]
 	s.runsMu.Unlock()
-	if run == nil {
+	if run == nil || run.finished() {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -228,6 +229,11 @@ func (s *Server) execRun(ctx context.Context, chatID, prompt string, images []st
 	st.send(map[string]any{"type": "start", "messageId": st.msgID, "messageMetadata": map[string]any{"startedAt": startedAt}})
 
 	dir := s.ws.Dir // 跑的过程中切了项目，也提交到这一轮所在的那个
+	// 消息里的引用（@表:id#n）：附上解析结果，引用的本机图片也给模型看（refs.go）。用户看到的消息不变
+	if block, imgs := s.resolveRefsBlock(ctx, prompt); block != "" {
+		prompt += "\n\n" + block
+		images = append(images, imgs...)
+	}
 	stats, err := s.agent.Run(ctx, chatID, prompt, images, st.event)
 	st.mu.Lock()
 	st.closeBlocks()
@@ -329,6 +335,12 @@ func (r *agentRun) finish() {
 	r.mu.Unlock()
 }
 
+func (r *agentRun) finished() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.done
+}
+
 // serve 以 SSE 推送：先回放已有分块，再跟着实时推，直到这一轮结束或连接断开。
 func (r *agentRun) serve(ctx context.Context, w http.ResponseWriter) {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
@@ -337,6 +349,10 @@ func (r *agentRun) serve(ctx context.Context, w http.ResponseWriter) {
 	w.Header().Set("x-accel-buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	// 长时间没有分块（助手在等后台命令跑完）时每 15 秒发一行注释：远程访问的隧道、代理不会当成空闲连接断掉，
+	// 手机浏览器也能更早发现连接已经没了（前端断了会自己重连）
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
 	next := 0
 	for {
 		r.mu.Lock()
@@ -355,6 +371,11 @@ func (r *agentRun) serve(ctx context.Context, w http.ResponseWriter) {
 		}
 		select {
 		case <-wake:
+		case <-ping.C:
+			fmt.Fprint(w, ": ping\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
 		case <-ctx.Done():
 			return // 浏览器断开：只是不再推给它，agent 照常跑
 		}
@@ -377,6 +398,8 @@ type uiStream struct {
 	textAt  int
 	thinkAt int
 	toolAt  map[string]int
+
+	bgSince map[string]int64 // 后台任务 id → 第一次看到的时间（毫秒）
 }
 
 func (st *uiStream) send(v any) {
@@ -457,6 +480,21 @@ func (st *uiStream) event(e agent.Event) {
 		st.closeBlocks()
 		st.send(map[string]any{"type": "data-steer", "id": e.ToolID, "data": e.Data})
 		st.parts = append(st.parts, map[string]any{"type": "data-steer", "id": e.ToolID, "data": e.Data})
+	case "background":
+		// 还在跑的后台任务：transient，只给界面显示「在等什么」，不进消息。记下第一次看到的时间，界面显示跑了多久
+		tasks, _ := e.Data.([]map[string]string)
+		now := time.Now().UnixMilli()
+		if st.bgSince == nil {
+			st.bgSince = map[string]int64{}
+		}
+		list := make([]map[string]any, 0, len(tasks))
+		for _, t := range tasks {
+			if st.bgSince[t["id"]] == 0 {
+				st.bgSince[t["id"]] = now
+			}
+			list = append(list, map[string]any{"id": t["id"], "description": t["description"], "type": t["type"], "startedAt": st.bgSince[t["id"]]})
+		}
+		st.send(map[string]any{"type": "data-background", "data": map[string]any{"tasks": list}, "transient": true})
 	case "context":
 		st.send(map[string]any{"type": "message-metadata", "messageMetadata": map[string]any{"live": map[string]any{"contextTokens": e.ContextTokens, "contextWindow": e.ContextWindow}}})
 	case "text":
@@ -506,12 +544,18 @@ func (st *uiStream) event(e agent.Event) {
 // StopRuns 在 Shuttle 退出前调用：中止正在进行的一轮，等它把已产生的部分回复存进历史
 // （标记为已停止），最多等 timeout。不这么做的话，进程一退，这一轮的回答就丢了。
 func (s *Server) StopRuns(timeout time.Duration) {
-	s.agent.Abort("")
+	views := append(s.views(), s.view(s.none)) // 每个打开着的项目都停
+	for _, v := range views {
+		v.agent.Abort("")
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		s.runsMu.Lock()
-		n := len(s.runs)
-		s.runsMu.Unlock()
+		n := 0
+		for _, v := range views {
+			v.runsMu.Lock()
+			n += len(v.runs)
+			v.runsMu.Unlock()
+		}
 		if n == 0 {
 			return
 		}

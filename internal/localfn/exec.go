@@ -29,6 +29,9 @@ const (
 // 命令按登录 shell 的 PATH 找（localcmd），带路径的（scripts/x.sh）相对 cwd；cwd 默认项目根目录，不能出项目；
 // 没给 input 时 stdin 是空的（不会卡在等输入上）；env 加在 Annulo 的环境变量上（密钥用 ctx.secrets.get 读了放这里传给命令）。
 func (r *runner) exec(name string, args goja.Value, opts goja.Value) *goja.Promise {
+	if r.h.NoExec {
+		return r.rejected(i18n.New("这里不能用 ctx.exec：函数是服务器派到节点（用户电脑）上跑的，节点只借出浏览器和网络", "ctx.exec isn't available here: the server sent this function to run on a node (a user's computer), which only lends its browser and network"))
+	}
 	// ctx.exec('ls', { cwd }) 也认：第二个参数是对象不是数组时当 opts
 	if o, ok := args.(*goja.Object); ok && o.ClassName() != "Array" && (opts == nil || goja.IsUndefined(opts)) {
 		args, opts = nil, args

@@ -63,6 +63,8 @@ electron-tools: web
 electron-mac: electron-tools
 	npm --prefix electron ci --no-audit --no-fund
 	npm --prefix electron run test
+	@# 安装包文件名带版本号，electron-builder 不会覆盖旧版，打包前清掉，不然每发一版多几百 MB
+	rm -f dist/electron/mac/Annulo-*
 	npm --prefix electron run pack:mac
 
 electron-mac-split: electron-tools
@@ -70,6 +72,7 @@ electron-mac-split: electron-tools
 	cp dist/electron/arm64/annulo dist/electron/arm64/shuttle dist/electron/mac-tools/arm64/bin/
 	cp dist/electron/amd64/annulo dist/electron/amd64/shuttle dist/electron/mac-tools/x64/bin/
 	npm --prefix electron ci --no-audit --no-fund
+	rm -f dist/electron/mac/Annulo-*
 	npm --prefix electron run pack:mac:split
 
 electron-windows-tools: web
@@ -82,6 +85,8 @@ electron-windows-tools: web
 electron-win: electron-windows-tools
 	npm --prefix electron ci --no-audit --no-fund
 	npm --prefix electron run test
+	@# 同 electron-mac：清掉旧版本的安装包
+	rm -f dist/electron/windows/Annulo-*
 	npm --prefix electron run pack:win
 
 win: electron-win

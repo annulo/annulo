@@ -16,7 +16,7 @@ func TestRemoteAIListed(t *testing.T) {
 	root := t.TempDir()
 	a := filepath.Join(root, "backends", "pa")
 	writeProject(t, a, "pa/sa", "https://creght.cn", nil)
-	s := &Server{cfg: &config.Config{Dir: root}, ws: &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}}
+	s := newTestServer(&config.Config{Dir: root}, &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}, nil)
 	s.ready.Store(true)
 	if fns := s.relayRemote()["pa"]; !slices.Contains(fns, "_shuttle.send") || !slices.Contains(fns, "_shuttle.chat") {
 		t.Fatalf("当前项目要带上助手函数：%v", fns)
@@ -39,7 +39,7 @@ func TestRemoteAILive(t *testing.T) {
 	cfg := &config.Config{Dir: root, Active: "cli:" + engine, Thinking: "low", AutoTitle: &f}
 	ag := agent.New(cfg)
 	ag.SetWorkspace("pa", dir)
-	s := &Server{cfg: cfg, agent: ag, runs: map[string]*agentRun{}, ws: &creght.Workspace{Dir: dir, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}}
+	s := newTestServer(cfg, &creght.Workspace{Dir: dir, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}, ag)
 	s.ready.Store(true)
 	r, err := s.relayAI(t.Context(), "pa", "_shuttle.send", map[string]any{"text": "读 notes.txt，只回答里面的 secret word。"})
 	if err != nil {

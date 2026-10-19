@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/i18n"
 	"github.com/annulo/annulo/internal/plugin"
 )
@@ -172,6 +173,9 @@ func (s *Server) EnsureTables(ctx context.Context) error {
 	if !s.ready.Load() || s.ws.Offline {
 		return nil // 离线项目的表在本机，不用建
 	}
+	// Attach 起一个，tableDefs 第一次读到 tables/ 又起一个：不排队的话两个都看到缺表，各建一份
+	s.ensureMu.Lock()
+	defer s.ensureMu.Unlock()
 	defs, err := s.tableDefs()
 	if err != nil {
 		return err
@@ -189,5 +193,76 @@ func (s *Server) EnsureTables(ctx context.Context) error {
 		}
 		log.Printf("建表 %s（%s）", d.Key, d.Name)
 	}
+	s.dropDuplicateTables(ctx, defs)
 	return nil
+}
+
+// dropDuplicateTables 删掉同名的空表：早期版本打开项目时会并发跑两次 EnsureTables，每张表建了两份，
+// 读写可能落到不同的那张上。每个 key 留有数据的那张（都空就留平台列表里排第一的，和 TableID 取的一致），删掉其余空的；
+// 几张都有数据的不动，只记日志。
+func (s *Server) dropDuplicateTables(ctx context.Context, defs []tableDef) {
+	pid := s.ws.ProjectID
+	list, err := s.creght.Tables(ctx, pid)
+	if err != nil {
+		log.Printf("检查重复的业务表失败：%v", err)
+		return
+	}
+	declared := map[string]bool{}
+	for _, d := range defs {
+		declared[d.Key] = true
+	}
+	byKey := map[string][]string{}
+	var keys []string
+	for _, t := range list {
+		if !declared[t.Key] {
+			continue
+		}
+		if byKey[t.Key] == nil {
+			keys = append(keys, t.Key)
+		}
+		byKey[t.Key] = append(byKey[t.Key], t.ID)
+	}
+	for _, key := range keys {
+		ids := byKey[key]
+		if len(ids) < 2 {
+			continue
+		}
+		var full, empty []string
+		ok := true
+		for _, id := range ids {
+			recs, _, _, err := s.creght.QueryRecords(ctx, pid, id, creght.RecordQuery{Limit: 1, SkipTotal: true})
+			if err != nil {
+				log.Printf("检查重复的表 %s（%s）失败：%v", key, id, err)
+				ok = false // 不知道空不空，这次不动
+				break
+			}
+			if len(recs) > 0 {
+				full = append(full, id)
+			} else {
+				empty = append(empty, id)
+			}
+		}
+		if !ok {
+			continue
+		}
+		if len(full) > 1 {
+			log.Printf("表 %s 有 %d 张同名的都有数据（%v），没有删", key, len(full), full)
+			continue
+		}
+		drop := empty
+		if len(full) == 0 {
+			drop = empty[1:] // 都是空的：留第一张
+		}
+		for _, id := range drop {
+			if err := s.creght.DeleteTable(ctx, pid, id); err != nil {
+				log.Printf("删除重复的空表 %s（%s）失败：%v", key, id, err)
+				continue
+			}
+			log.Printf("删除了重复的空表 %s（%s）", key, id)
+		}
+		// 缓存里可能是刚删掉的那张
+		s.tids.mu.Lock()
+		delete(s.tids.ids, pid+"/"+key)
+		s.tids.mu.Unlock()
+	}
 }

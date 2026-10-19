@@ -60,7 +60,7 @@ func TestCreghtModelApis(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &Agent{cfg: &config.Config{}}
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{}}
 	a.SetCreghtHost(srv.URL)
 	list, err := a.RefreshCreghtModels(context.Background(), true)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestCreghtModelApis(t *testing.T) {
 
 // 关掉服务商：它的模型不出现，当前模型在里面就换成别的；全关了也能关；再打开就回来
 func TestDisableProvider(t *testing.T) {
-	a := &Agent{cfg: &config.Config{Dir: t.TempDir(),
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{Dir: t.TempDir(),
 		Providers: []config.Provider{{ID: "p1", Name: "mine"}},
 		Models:    []config.LLM{{ID: "m1", Provider: "p1", Model: "mine"}},
 		Active:    creghtPrefix + "luna"}}
@@ -138,7 +138,7 @@ func TestDisableProvider(t *testing.T) {
 
 // 同一个服务商下不能加两个一样的模型 id；别的服务商下可以，改自己不算重复
 func TestSaveModelDuplicate(t *testing.T) {
-	a := &Agent{cfg: &config.Config{Dir: t.TempDir(),
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{Dir: t.TempDir(),
 		Providers: []config.Provider{{ID: "p1", Name: "sub"}, {ID: "p2", Name: "other"}},
 		Models:    []config.LLM{{ID: "m1", Provider: "p1", Model: "deepseek-chat"}}}}
 	if _, err := a.SaveModel(config.LLM{Provider: "p1", Model: "deepseek-chat"}); err == nil || !strings.Contains(err.Error(), "sub") {

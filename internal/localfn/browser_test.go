@@ -83,7 +83,9 @@ export async function publish(input: { url: string }, ctx: any) {
   await b.goto(input.url)
   await b.upload('#f', [input.url + 'cover.jpg', card])
   const files = await b.text('#files')
-  return { id: r.json.id, files, value, url: b.url(), missed, badUpload }
+  // 后台无界面的浏览器调不到前台：b.show() 是 rejected 的 Promise
+  const shown = await b.show().then(() => 'shown', (e: any) => 'caught: ' + e.message)
+  return { id: r.json.id, files, value, url: b.url(), missed, badUpload, shown }
 }
 export async function crash(input: { url: string }, ctx: any) {
   await ctx.browser.open({ profile: 'demo', url: input.url })
@@ -103,6 +105,9 @@ export async function crash(input: { url: string }, ctx: any) {
 	}
 	if m, _ := out["badUpload"].(string); !strings.HasPrefix(m, "caught: upload 的文件不对") {
 		t.Fatalf(".catch 没接住 upload 的错误：%v", out["badUpload"])
+	}
+	if m, _ := out["shown"].(string); !strings.Contains(m, "无界面") {
+		t.Fatalf("headless 的 b.show() 应该报错：%v", out["shown"])
 	}
 	if f := out["files"].(string); !strings.HasPrefix(f, "jpg:9,png:") {
 		t.Fatalf("上传的文件：%q", f)

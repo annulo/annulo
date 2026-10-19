@@ -60,25 +60,28 @@ export default function AboutSettings() {
       {!update.available ? (
         <p className="text-xs text-muted-foreground">{t('在 Annulo App 里才能检查和安装更新。')}</p>
       ) : s && s.state !== 'idle' ? (
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
-          <div className="min-w-0 text-sm">
-            <div className="font-medium">{t('新版本 {v}', { v: s.version ?? '' })}</div>
-            <div className="text-xs text-muted-foreground">
-              {s.state === 'downloading'
-                ? t('下载中… {pct}%', { pct })
-                : s.state === 'ready'
-                  ? t('已经下载好，安装时 Annulo 会自动重启')
-                  : s.state === 'installing'
-                    ? t('正在安装…')
-                    : s.error
-                      ? t('下载失败：{error}', { error: s.error })
-                      : t('有新版本可以更新')}
+        <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0 text-sm">
+              <div className="font-medium">{t('新版本 {v}', { v: s.version ?? '' })}</div>
+              <div className="text-xs text-muted-foreground">
+                {s.state === 'downloading'
+                  ? t('下载中… {pct}%', { pct })
+                  : s.state === 'ready'
+                    ? t('已经下载好，安装时 Annulo 会自动重启')
+                    : s.state === 'installing'
+                      ? t('正在安装…')
+                      : s.error
+                        ? t('下载失败：{error}', { error: s.error })
+                        : t('有新版本可以更新')}
+              </div>
             </div>
+            <Button size="sm" onClick={openDialog} className="shrink-0 gap-1.5">
+              <ArrowDownToLine className="size-3.5" />
+              {s.state === 'ready' ? t('安装更新') : s.state === 'available' ? t('下载') : t('查看')}
+            </Button>
           </div>
-          <Button size="sm" onClick={openDialog} className="shrink-0 gap-1.5">
-            <ArrowDownToLine className="size-3.5" />
-            {s.state === 'ready' ? t('安装更新') : s.state === 'available' ? t('下载') : t('查看')}
-          </Button>
+          {s.notes && <p className="max-h-60 overflow-y-auto whitespace-pre-wrap border-t border-primary/20 pt-2 text-xs leading-relaxed text-muted-foreground">{s.notes}</p>}
         </div>
       ) : checked && s?.error ? (
         <p className="text-xs text-destructive">{t('检查更新失败：{error}', { error: s.error })}</p>

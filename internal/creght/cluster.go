@@ -3,7 +3,9 @@ package creght
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/annulo/annulo/internal/i18n"
 )
@@ -19,6 +21,8 @@ type Cluster struct {
 	name [2]string // 中文、英文
 	// Hidden：不在区域列表里给人选（2026-10-06 起 talizen.com 不再列出）；已经选了它的照常用，正在用时列表里仍显示
 	Hidden bool
+	// Custom：自己部署的 creght（用管理员令牌连，没有 OAuth 登录）
+	Custom bool
 }
 
 func (c Cluster) Name() string { return i18n.T(c.name[0], c.name[1]) }
@@ -29,12 +33,40 @@ var Clusters = []Cluster{
 	{Host: "https://talizen.com", name: [2]string{"talizen.com", "talizen.com"}, Hidden: true},
 }
 
+// 自己部署的 creght（独立部署版）：用户在 设置 → 连接 里加的地址，用管理员令牌连（StoreStaticToken）。
+// 存在 config.json（config.CreghtCustom），启动时 SetCustom 进来。
+var (
+	customMu sync.Mutex
+	custom   []Cluster
+)
+
+// SetCustom 设自己部署的 creght 地址列表（host → 名字）。
+func SetCustom(list map[string]string) {
+	customMu.Lock()
+	defer customMu.Unlock()
+	custom = nil
+	for h, name := range list {
+		if name == "" {
+			name = strings.TrimPrefix(strings.TrimPrefix(normHost(h), "https://"), "http://")
+		}
+		custom = append(custom, Cluster{Host: normHost(h), name: [2]string{name, name}, Custom: true})
+	}
+	sort.Slice(custom, func(i, j int) bool { return custom[i].Host < custom[j].Host })
+}
+
+// AllClusters 是内置的集群加上自己部署的。
+func AllClusters() []Cluster {
+	customMu.Lock()
+	defer customMu.Unlock()
+	return append(append([]Cluster{}, Clusters...), custom...)
+}
+
 // ClusterOf 按地址找集群（地址大小写、结尾斜杠不影响）；不是已知集群返回 nil。
 func ClusterOf(host string) *Cluster {
 	h := normHost(host)
-	for i := range Clusters {
-		if Clusters[i].Host == h {
-			return &Clusters[i]
+	for _, c := range AllClusters() {
+		if c.Host == h {
+			return &c
 		}
 	}
 	return nil

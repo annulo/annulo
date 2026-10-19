@@ -84,7 +84,7 @@ export default function SkillSettings() {
       </div>
 
       <div className="space-y-3">
-        <div className="flex items-baseline justify-between">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h4 className="text-sm font-semibold">{t('已安装')}</h4>
           <span className="text-xs text-muted-foreground">
             {t('{n} 个启用，会进入 agent 的上下文', { n: enabled })}
@@ -99,12 +99,12 @@ export default function SkillSettings() {
 
       {state.local.length > 0 && (
         <div className="space-y-3">
-          <div className="flex items-end justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+            <div className="min-w-0">
               <h4 className="text-sm font-semibold">{t('本机其他 agent 的 skill')}</h4>
               <p className="mt-1 text-xs text-muted-foreground">{t('来自 ~/.agents/skills 和 ~/.claude/skills。导入是软链过来，原目录更新后这里也跟着更新。')}</p>
             </div>
-            <label className="relative w-56 shrink-0">
+            <label className="relative w-full shrink-0 sm:w-56">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('搜索')} className="h-8 pl-8" aria-label={t('搜索本机 skill')} />
             </label>
@@ -116,7 +116,7 @@ export default function SkillSettings() {
               local.map((s) => (
                 <div key={s.name} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono text-[13px] font-semibold">{s.name}</div>
+                    <div className="font-mono text-[13px] font-semibold break-all">{s.name}</div>
                     <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{s.description}</div>
                   </div>
                   <Button variant="outline" size="sm" disabled={!!busy} onClick={() => install(s.path.replace(/\/SKILL\.md$/, ''), true, s.name)}>
@@ -141,26 +141,25 @@ function SkillRow({ s, onToggle, onRemove }: { s: SkillInfo; onToggle: (on: bool
     <div className={cn('flex items-start gap-4 border-b border-border px-4 py-3.5 last:border-b-0', !s.enabled && 'opacity-60')}>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[13px] font-semibold">{s.name}</span>
+          <span className="font-mono text-[13px] font-semibold break-all">{s.name}</span>
           {builtin ? <Badge tone="primary">{t('内置')}</Badge> : workspace ? <Badge>{t('项目')}</Badge> : s.linked ? <Badge>{t('软链')}</Badge> : null}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{s.description}</p>
         {s.origin && <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground/80">{s.origin}</p>}
       </div>
       <div className="flex shrink-0 items-center gap-2 pt-0.5">
-        {!builtin && !workspace && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => (confirm ? onRemove() : setConfirm(true))}
-            onMouseLeave={() => setConfirm(false)}
-            aria-label={confirm ? t('再点一次删除') : t('删除 {label}', { label: s.name })}
-            title={confirm ? t('再点一次删除') : t('删除')}
-            className={confirm ? 'text-destructive' : 'text-muted-foreground'}
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        )}
+        {/* 删除要点两下：第一下换成写着「确认删除」的红按钮（只变图标颜色看不出来），移开鼠标就恢复 */}
+        {!builtin && !workspace &&
+          (confirm ? (
+            <Button variant="destructive" size="xs" onClick={onRemove} onMouseLeave={() => setConfirm(false)}>
+              <Trash2 className="size-3.5" />
+              {t('确认删除')}
+            </Button>
+          ) : (
+            <Button variant="ghost" size="icon-xs" onClick={() => setConfirm(true)} aria-label={t('删除 {label}', { label: s.name })} title={t('删除')} className="text-muted-foreground">
+              <Trash2 className="size-3.5" />
+            </Button>
+          ))}
         <Switch checked={s.enabled} disabled={builtin} onChange={onToggle} label={`${s.enabled ? '停用' : '启用'} ${s.name}`} />
       </div>
     </div>

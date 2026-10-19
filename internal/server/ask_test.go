@@ -15,7 +15,7 @@ import (
 )
 
 func TestLocalAskValidates(t *testing.T) {
-	s := &Server{}
+	s := newTestServer(nil, nil, nil)
 	for _, body := range []string{`{"text":"   "}`, `not json`} {
 		w := httptest.NewRecorder()
 		s.apiLocalAsk(w, httptest.NewRequest(http.MethodPost, "/_shuttle/api/local/ask", strings.NewReader(body)))
@@ -35,7 +35,7 @@ func TestLocalAskChatExistsOnReturn(t *testing.T) {
 	cfg := &config.Config{Dir: root, AutoTitle: &f, DisabledProviders: []string{config.CreghtProvider, agent.EngineClaude, agent.EngineCodex}}
 	ag := agent.New(cfg)
 	ag.SetWorkspace("pa", dir)
-	s := &Server{cfg: cfg, agent: ag, runs: map[string]*agentRun{}, ws: &creght.Workspace{Dir: dir, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}}
+	s := newTestServer(cfg, &creght.Workspace{Dir: dir, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}, ag)
 	s.ready.Store(true)
 
 	w := httptest.NewRecorder()

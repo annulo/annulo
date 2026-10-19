@@ -26,7 +26,7 @@ export async function sync(input: { since?: string }, ctx: any) {
 
 ## ctx 能用的
 
-只有下面这些：不能读写本机文件，不能 import npm 包。要用本机的命令行工具，用 `ctx.exec`。
+只有下面这些：不能 import npm 包；本机文件只能读写项目的工作目录（`ctx.fs`）。要用本机的命令行工具，用 `ctx.exec`。
 
 | | |
 |---|---|
@@ -38,15 +38,18 @@ export async function sync(input: { since?: string }, ctx: any) {
 | `ctx.html(text)` | 解析 HTML：`.find('css 选择器')` 返回 `[{ tag, text, attrs }]`，`.text()` 是看得见的文字，`.markdown()` 转成 Markdown |
 | `ctx.secrets.get('NAME')` | 本机密钥（用户在 设置 → 密钥 里填的，或终端里的环境变量），没有是 null |
 | `await ctx.mcp(server, tool, args)` | 调用户在 Annulo 里连上的 MCP 工具（对话里的 `mcp__<server>__<tool>` 就是它）。返回工具的结果（文本是 JSON 的会解析好），工具报错就抛出；没连上、没授权、工具在设置里关掉了，都会抛出能看懂的错。**接外部平台的数据读写，优先走它**。封装成项目里的一个文件（比如 `local/_<平台>.ts`），平台换接口时只改一处。还没连的 MCP 怎么接，见 `extend.md`。`ctx.mcp.servers()` 列出用户加了的 MCP：`[{ name, status }]`，status 是 `connected` / `needs_auth` / `connecting` / `failed` / `disabled`；要按连没连某个平台决定显不显示功能时用它，不要靠调用的报错去猜。没连 creght 时列表里没有 `creght` |
+| `await ctx.upload({ url, name })` | 下载这个网址，存成运营后台的素材（和页面上传同一个地方），返回 `{ url, size, content_type, existed }`。外部平台给的图片、文件地址常常是临时的（Notion 的几分钟就失效，有的要登录才能看），要放进文章、配图、表里的，先用它换成长期地址再存。`name` 是文件名（决定扩展名），不给就取网址最后一段。按 `fetch` 的出网规则下载，单个最多 200MB |
 | `ctx.agent.current()` | 助手当前用的模型：`{ id, name, provider, model, ready, error }`。`ready` 是 false 时助手跑不起来（没配模型、缺 key），`error` 说明原因和去哪配。页面上要交给助手的功能（跑任务、AI 预填）先看它：没准备好就别承诺 AI、给出手动的路，旁边带去 设置 → 模型 的入口 |
-| `await ctx.oauth(provider, { account })` | 用户在 设置 → 连接 里授权过的账号的 access token，过期自动刷新；自己带上 `authorization: Bearer <token>` 调对方的 REST 接口。现在能连的是 `google`（Search Console 只读）。没连接会抛出「到 设置 → 连接 里连接」，原样抛给用户就行。一种连接可以连多个账号：`ctx.oauth.accounts(provider)` 列出连着的账号（最早连的在前），`account` 不给就用最早连的。要按对象记住用哪个账号，不要假设只有一个 |
+| `await ctx.oauth(provider, { account })` | 用户在 设置 → 连接 里授权过的账号的 access token，过期自动刷新；自己带上 `authorization: Bearer <token>` 调对方的 REST 接口。现在能连的是 `google`（Search Console、GA4 只读）和 `facebook`。没连接会抛出「到 设置 → 连接 里连接」，原样抛给用户就行。连接按项目分开：只拿得到当前项目连的账号，别的项目连的看不到。一种连接可以连多个账号：`ctx.oauth.accounts(provider)` 列出这个项目连着的账号（最早连的在前），`account` 不给就用最早连的。要按对象记住用哪个账号，不要假设只有一个 |
 | `await ctx.browser.open({ profile, url?, show? })` | 用本机 Chrome 操作网页，见 `browser.md` |
 | `await ctx.exec(命令, [参数…], { cwd, input, timeout, env })` | 跑本机的命令行工具：`fetch` 做不到、本机有现成命令的事（`openssl` 查证书、`dig` 查解析、`ffmpeg` 转视频、`git`、某个平台自己的 CLI）。返回 `{ code, stdout, stderr, truncated }`；退出码不是 0 不算出错，自己看 `code`；只有找不到命令、超时才抛出。**命令和参数分开传，不经过 shell**：参数原样交给命令，网址、用户输入直接放进数组，不要拼进命令字符串。要管道、重定向，就用 `ctx.exec('sh', ['-c', '… "$1" …', '_', host])`，值用 `$1`、`$2` 传进去；长一点的脚本放进项目（比如 `scripts/x.sh`），用 `ctx.exec('sh', ['scripts/x.sh', 参数])` 跑。命令按用户登录 shell 的 PATH 找（Homebrew 装的也找得到）。`cwd` 相对项目根目录，不能出项目。没给 `input` 时 stdin 是空的。`timeout` 单位毫秒，默认 30 秒、最多 10 分钟。stdout、stderr 各保留 10MB。命令要用密钥时，用 `env: { TOKEN: ctx.secrets.get('TOKEN') }` 传，不要放进参数（参数会出现在进程列表里）。先在你的 bash 里把命令试通，再写进函数。Windows 上没有 `sh`、`openssl` 这些，用到它们的函数要写明只能在 macOS 上用，或者换个办法 |
 | `await ctx.llm('问题')` / `ctx.llm({ system, prompt })` | 用当前模型答一次（不带工具），用户看不到过程。只用于起标题、翻译、摘要、分类这类短的一次性生成；长流程交给助手（见 `SKILL.md`「做成软件」） |
-| `ctx.llm.providers()` / `await ctx.llm.fetch(服务商 id, 路径, { method, headers, body })` | 用用户在 设置 → 模型 里配好的服务商。**要模型做 `ctx.llm` 管不了的事（联网搜索、指定某个模型）时用它，不要让用户在页面上另填 key 和接口地址**。`providers()` 返回 `[{ id, name, kind, api, base_url, builtin, enabled, ready, error, models: [{ id, model, name, api, web_search }] }]`，不含 key；`kind` 是 `api`（能 `fetch`）或 `cli`（本机装了的 Claude Code / Codex：助手能用，但没有接口地址，`fetch` 用不了，要发请求就只列 `kind === 'api'` 的）；`web_search` 是平台标明能用 `/responses` 联网搜索的模型。`fetch` 和全局 `fetch` 一样，返回能流式读的 Response；路径接在服务商地址后面（OpenAI 兼容的一般是 `/responses`、`/chat/completions`，Anthropic 是 `/v1/messages`），地址和鉴权由 Annulo 补上，请求体按那个接口的格式自己写 |
+| `await ctx.llm({ prompt, system, provider, model, web_search: true })` | 能力版本 40。`provider` / `model` 指定这次用哪个模型（`provider` 空时 `model` 是 `providers()` 里模型的 `id`；给了 `provider` 时 `model` 是模型名，没登记的也能用）。`web_search: true` 让模型联网搜索后回答，返回 `{ text, sources: [{ url, title }], searches: [{ type, queries, url, sources }], tokens, model }`：接口服务商走 OpenAI Responses 的联网搜索（`web_search` 为 true 的模型），本机的 Claude Code / Codex 用它们自己的搜索（一次一两分钟）。**要联网搜索的用它，不要自己用 `ctx.llm.fetch` 拼 `/responses`** |
+| `ctx.llm.providers()` / `await ctx.llm.fetch(服务商 id, 路径, { method, headers, body })` | 用用户在 设置 → 模型 里配好的服务商。**要模型做 `ctx.llm` 管不了的事（某个接口特有的参数）时用它，不要让用户在页面上另填 key 和接口地址**。`providers()` 返回 `[{ id, name, kind, api, base_url, builtin, enabled, ready, error, models: [{ id, model, name, api, web_search }] }]`，不含 key；`kind` 是 `api`（能 `fetch`）或 `cli`（本机装了的 Claude Code / Codex：助手能用，但没有接口地址，`fetch` 用不了，要发请求就只列 `kind === 'api'` 的）；`web_search` 是能联网搜索（`ctx.llm` 的 `web_search`）的模型：creght 平台标明的，和本机 agent 的。`fetch` 和全局 `fetch` 一样，返回能流式读的 Response；路径接在服务商地址后面（OpenAI 兼容的一般是 `/responses`、`/chat/completions`，Anthropic 是 `/v1/messages`），地址和鉴权由 Annulo 补上，请求体按那个接口的格式自己写 |
 | `ctx.progress({ done, total, message })`、`ctx.log(...)` / `console.log` | 进度和日志，页面和 `annulo run` 上都看得到 |
 | `await ctx.sleep(ms)` | 等待（没有 setTimeout），最长 60 秒 |
-| `ctx.workspace` | `{ project_id, site_id, api_host, annulo_projects, annulo_api, machine, logs_dir, offline }`。`annulo_api` 是这台 Annulo 的能力版本；`annulo_projects` 是账号下所有 Annulo 项目在 creght 上的项目 id；`machine` 是这台电脑的 `{ id, name }`，`name` 拿来告诉用户是哪台电脑；`offline` 为 true 时是离线项目（数据在本机，没有 `site_id`） |
+| `ctx.workspace` | `{ project_id, site_id, api_host, annulo_projects, annulo_api, machine, logs_dir, offline, work_dir }`。`annulo_api` 是这台 Annulo 的能力版本；`annulo_projects` 是账号下所有 Annulo 项目在 creght 上的项目 id；`machine` 是这台电脑的 `{ id, name }`，`name` 拿来告诉用户是哪台电脑；`offline` 为 true 时是离线项目（数据在本机，没有 `site_id`）；`work_dir` 是项目的工作目录（见 `ctx.fs`） |
+| `ctx.fs` | 读写项目的**工作目录**（`ctx.fs.root`，和系统提示「工作文件放哪」是同一个目录：本机 `~/Annulo/<项目名>`）。路径都相对工作目录、用 `/` 分隔，不能是绝对路径、不能带 `..`。全是同步的：`list(dir?)` → `[{ path, dir, size, mtime }]`（往下所有层，跳过 `.` 开头的和 `node_modules`，最多 5000 条，`mtime` 毫秒）；`stat(path)` → 同样一条或 `null`；`read(path)` → 文字（最多 10MB）；`write(path, text)`（自动建目录）；`mkdir(path)`；`move(from, to)`；`trash(path)`（进废纸篓）；`copy(from, to)`（`from` 可以是 `local:<name>`，把页面上传的、资料库里的本机文件放进来）；`toLocal(path)` → `local:<name>`（存成项目的本机文件，发布、写进表用；同一个文件没改过给同一个名字）；`open(path, { reveal })`（用系统程序打开 / 在访达里显示）；`canOpen` 是 false（服务端部署）时没有 `open`，页面改成在新标签页打开预览地址。目标已经有了的 `move`、`copy` 报错。页面直接用 `/_annulo/work-files/<路径>` 显示里面的图片、视频（路径每段 `encodeURIComponent`） |
 | `ctx.chat_id` | 你在对话里用 `annulo run` 跑这个函数时，是哪段对话的 id；页面按钮、定时任务直接调的是空字符串。要让结果能点回「生成它的对话」（周报、文章旁边的「看助手怎么写的」），在保存函数里把它存进表的 `chat_id` 字段，**不要让助手在 JSON 里照抄对话 id** |
 | `ctx.locale` | 界面语言 `'zh'` / `'en'`（Annulo 设置里选的语言，跟随系统时按系统语言，定时任务也一样）。抛出的报错、返回给页面显示的说明，按它出两种语言 |
 
@@ -75,7 +78,7 @@ export async function sync(input: { since?: string }, ctx: any) {
 
 - **能放进 cloud 的**：只用到 `ctx.db`（包括 `aggregate`）、`ctx.locale`、`ctx.mcp('creght', …)`（只读工具，只给项目所有者）的函数，比如读表、算统计、只改表（改状态、保存）的。
   `ctx.progress` / `ctx.log` / `ctx.sleep` 在云端什么都不做，`ctx.workspace` 是 undefined（照常写 `ctx.workspace?.x ?? 默认值`）。
-- **不能放的**：用到 `ctx.secrets`、`ctx.browser`、`ctx.llm`、`ctx.oauth`、`ctx.exec`、`ctx.fetchAll`、`ctx.html` 的，在云端一调用就抛出「要在电脑上的 Annulo 里跑」。
+- **不能放的**：用到 `ctx.secrets`、`ctx.browser`、`ctx.llm`、`ctx.oauth`、`ctx.exec`、`ctx.fetchAll`、`ctx.html`、`ctx.upload` 的，在云端一调用就抛出「要在电脑上的 Annulo 里跑」。
   全局 `fetch` 云端也有，但请求从平台服务器发出，拿不到本机密钥。
 - 云端版本只给这个项目的成员调。同一个函数在本机和云端的结果要一样：照常写就行，`order_by`、`filter` 的写法云端会自动转换。
 - `backend/func/local/` 是生成的：不进 git，**不要手改**，要改就改 `local/<文件>.ts`。改了 `cloud` 列表或这些函数，要 `annulo push` 才会到云端。
@@ -84,3 +87,8 @@ export async function sync(input: { since?: string }, ctx: any) {
 **要用电脑的（浏览器登录态、密钥）：`export const remote = ['publish']`**。手机上点了，平台把调用转给项目所有者电脑上开着的 Annulo，
 在这台电脑上照常跑，进度一路推回手机页面。条件是：电脑上 Annulo 开着，并且 设置 → 远程访问 里打开了「允许远程调用这台电脑」（默认关）；只有项目所有者能调。
 同一个函数不能既在 `cloud` 又在 `remote`。`remote` 的函数不生成站点 Func，也**不用 `annulo push`**：Annulo 连上平台时自己把它们报上去，文件改了会重报。
+
+**Annulo 部署在服务器上时，要用户电脑的浏览器、网络的函数声明 `export const node = ['publish', 'collect']`**：服务器把它整个派给连着的节点（用户电脑上的 Annulo，设置 → 节点）跑，
+浏览器、`fetch` 用那台电脑的（登录态、出口 IP），`ctx.db`、密钥、模型、MCP、上传回调服务器；**不能用 `ctx.exec`**。社媒发布、采集这类一路都在操作浏览器的函数要放进 `node`，
+不然每个浏览器操作都要在服务器和电脑之间来回一趟，慢、断网就半途而废。只要密钥、连接、模型的函数不放（服务器上就有）。`node` 和 `remote`、`cloud` 可以同时写，互不影响；
+本机版 Annulo 不看 `node`。没有连着的电脑时调用直接报错，写着怎么连。

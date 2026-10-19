@@ -3,6 +3,12 @@
 网站没有开放接口（要登录的后台、只有网页版的平台）时，发布、采集都靠它。**发布、采集这些确定的动作写成本机函数（见 `functions.md`），不要让模型自己去点页面。**
 选择器写成常量放在文件开头，网站改版时只改一处。
 
+## 先看有没有参考代码
+
+没有接口、只能操作网页的网站，先去 [annulo/references](https://github.com/annulo/references) 找有没有现成的参考代码（`git clone --depth 1 https://github.com/annulo/references /tmp/annulo-references`，看根目录 README 的列表）：
+比如在 DeepSeek、豆包、Kimi、元宝的网页上提问（GEO 抽样、问 AI 怎么回答）用 `aichat/`，**不要自己从头写**。
+照那个目录的 README 复制进项目的 `local/`，在主文件开头记下复制自哪个提交；它坏了照它的 `MAINTAIN.md` 修：先和仓库最新的比，再排查、测试。
+
 ## 打开和账号
 
 `const b = await ctx.browser.open({ profile, url?, show?, offscreen?, keep_open? })`
@@ -11,6 +17,20 @@
 - `ctx.browser.profile(profile)` 返回 `{ id }`，本机没有这个 profile 就返回 `null`。id 存在 profile 目录里，跟着登录态走：登录成功后把它记到账号上；
   以后 id 对不上或者本机没有，说明登录态在别的电脑或别的 Annulo 上。这时定时任务跳过这个账号，不要当成登录过期。
 - 默认在后台跑（headless）。被网站识别出来时改用 `offscreen: true`。
+
+## 用户自己的浏览器：`profile: '@user'`
+
+用户一般只有一个账号、早在自己 Chrome 里登好了的网站（豆包、DeepSeek、Kimi、ChatGPT 网页版这类），用 `profile: '@user'`：
+经用户 Chrome 里的 Annulo 插件，在用户平时的浏览器里开一个新窗口操作，用户不用在 Annulo 的浏览器里再登录一遍。`b.*` 的用法完全一样。
+
+- 要多个账号、要互相隔离的（社媒），照旧一个账号一个独立 profile。
+- 第一次用某个网站时，用户的 Chrome 里会弹窗问「允许 Annulo 在这个网站上操作吗」：只有页面上点的运行会弹，后台定时任务碰到没允许的网站直接报错，提示用户先在页面上跑一次。
+- 只能在用户允许过的网站上操作：跳到别的网站（`goto` 或者页面自己跳）会被插件拦下，之后的操作都报错。
+- 用户有好几个 Chrome profile 时按网站自动选：允许过这个网站的那个（几个都允许过就用最近用过的）。`ctx.browser.user()` 列出连着的 profile
+  `{ profiles: [{ id, name, email, sites, last_active }] }`，要指定一个就写 `profile: '@user/<id>'`。
+- 没装插件、Chrome 没开时 `open` 会报错，告诉用户去装插件、打开 Chrome；`ctx.browser.user()` 的 `profiles` 是空数组就是没连上。
+- `headless`、`offscreen` 对它没用：窗口总是开在用户的屏幕上（不抢前台），`show: true` 才调到前台。
+- 不用排队：几个任务可以同时跑，每次 `open` 各开一个窗口。
 - 函数结束时浏览器自动关掉。
 
 ## 登录
@@ -44,6 +64,18 @@
 之后助手或本机函数用同一个 `profile` 调 `ctx.browser.open`，会接管同一个窗口（不填 `url` 停在当前页面，填了就跳过去），任务结束后交还控制，窗口继续保留。
 同一时间只有一个任务能操作这个窗口；用户关掉窗口后才释放这个 profile。对这种窗口调 `b.close()` 是交还控制，旧的句柄就不能再用了。
 自动任务不用传 `keep_open`，只在第一次把可见窗口交给用户时传。
+
+脚本做到一半、剩下的只有人能做（平台检测不过、必填项脚本填不对）时，`await b.show()` 把这次的窗口调到前台，
+告诉用户已经做好了什么、还要他做什么，再轮询页面等他做完（比如等发布接口的响应）；等不到就抛错，窗口留着给用户。
+后台无界面运行的（定时任务）调不出来，`b.show()` 会报错：照原来报错，写清楚要用户做什么。
+
+## 交给浏览器助手做完一件事：b.agent
+
+页面常改、表单要多步、会弹窗的（社媒发布这类），不要把每一步写死成选择器：`await b.agent(任务, { tools, files, avoid, notes })` 让浏览器助手看着页面做完，
+脚本只给它工具（富文本填写并读回核对、加标签、等上传完、带核对的发布）、列出能上传的文件、写清不许点的按钮（发布、删除这类收不回来的，只能经工具）。
+它学到的经验记在笔记里：插件自带 `plugins/<插件>/notes/<名字>.md`，项目自己的 `user/notes/<插件>/<名字>.md`（项目函数是 `user/notes/<名字>.md`）。
+笔记是给它看的说明（字段怎么认、坑、变化），人也能改；平台改版时先看、先改笔记。返回 `{ ok, summary | reason }`，没做完照原来交给用户（`b.show()`）。
+用法和安全边界见 Annulo 的 docs/browser-agent.md；B站 投稿（`plugins/social/local/bilibili.ts` 的 `agentAttempt`）是例子。
 
 ## 失败现场
 

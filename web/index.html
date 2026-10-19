@@ -2,15 +2,30 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="icon" href="/_shuttle/annulo-light.svg" media="(prefers-color-scheme: light)">
   <link rel="icon" href="/_shuttle/annulo-dark.svg" media="(prefers-color-scheme: dark)">
-  <title>Annulo · 运营后台</title>
+  <!-- 添加到桌面（internal/server/pwa.go）。远程访问的地址要登录，取清单要带上 cookie -->
+  <link rel="manifest" href="/_shuttle/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="/_shuttle/apple-touch-icon.png">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Annulo</title>
   <script>
     // 和平台编辑器同一个规则：用户选过就用选的，否则跟随系统；在渲染前设好，避免闪一下白
     (function () {
       var t = 'dark'
       try {
+        // 从别的项目跳过来时带着 ?theme=（每个项目一个源，localStorage 各是各的）：记下，从地址里去掉
+        var q = new URLSearchParams(location.search), carried = q.get('theme')
+        if (carried === 'light' || carried === 'dark') {
+          localStorage.setItem('shuttle.theme', carried)
+          localStorage.setItem('annulo.theme', carried)
+          q.delete('theme')
+          history.replaceState(history.state, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash)
+        }
         var saved = localStorage.getItem('shuttle.theme')
         if (saved === 'light' || saved === 'dark') t = saved
         else if (window.matchMedia('(prefers-color-scheme: light)').matches) t = 'light'

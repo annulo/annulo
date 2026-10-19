@@ -3,20 +3,65 @@ package localdb
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/annulo/annulo/internal/creght"
 )
 
 func TestLocalDB(t *testing.T) {
-	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "data.db")
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { Close(path) })
+	testStore(t, d)
+}
+
+// ANNULO_TEST_PG=postgres://… go test ./internal/localdb -run Postgres：同一组用例在 Postgres 上跑，再丢掉内存缓存从库里读一遍
+func TestPostgres(t *testing.T) {
+	dsn := os.Getenv("ANNULO_TEST_PG")
+	if dsn == "" {
+		t.Skip("set ANNULO_TEST_PG")
+	}
+	project := fmt.Sprintf("test-%d", time.Now().UnixNano())
+	d, err := OpenPostgres(dsn, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		d.db.Exec(`DELETE FROM annulo_records WHERE project = $1`, project)
+		ClosePostgres(dsn, project)
+	})
+	testStore(t, d)
+	// 别的项目看不到这个项目的数据
+	other, _ := OpenPostgres(dsn, project+"-other")
+	if tbls, _ := other.Tables(); len(tbls) != 0 {
+		t.Fatalf("项目之间要隔开：%v", tbls)
+	}
+	ClosePostgres(dsn, project+"-other")
+	// 丢掉缓存，从库里读回来，行数和顺序不变
+	before, _ := d.snapshot("posts")
+	d.mu.Lock()
+	d.rows = map[string][]*row{}
+	d.mu.Unlock()
+	after, _ := d.snapshot("posts")
+	if len(before) != len(after) {
+		t.Fatalf("重新读出来的行数不对：%d %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].id != after[i].id {
+			t.Fatalf("顺序不对：%s %s", before[i].id, after[i].id)
+		}
+	}
+}
+
+func testStore(t *testing.T, d *DB) {
+	ctx := context.Background()
 	rows := []map[string]any{
 		{"title": "a", "views": 10, "tags": []any{"x", "y"}, "date": "2026-09-28", "status": "draft"},
 		{"title": "b", "views": 5, "tags": []any{"y"}, "date": "2026-09-29", "status": "published"},

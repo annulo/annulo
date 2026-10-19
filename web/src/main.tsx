@@ -1,6 +1,7 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import './lib/pwa' // 尽早听 beforeinstallprompt（添加到桌面）
 
 const zh = navigator.language.toLowerCase().startsWith('zh')
 const detailOf = (error: unknown) => error instanceof Error ? `${error.name}: ${error.message}\n${error.stack || ''}` : String(error)
@@ -29,9 +30,18 @@ class StartupBoundary extends Component<{ children: ReactNode }, { detail: strin
 
 const root = createRoot(document.getElementById('root')!)
 // 把应用模块的加载/解析异常也接住；静态 import 失败会发生在错误兜底运行之前。
-void import('./App').then(({ default: App }) => {
+// 服务端部署要先登录（docs/server-and-multi-project.md「账号」）：没登录显示登录页，不加载 App。本机版 auth/me 回 server: false
+async function boot() {
+  const me = await fetch('/_shuttle/api/auth/me', { headers: { 'X-Shuttle': '1' } }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+  if (me?.server && !me.user) {
+    const { default: AuthPage } = await import('./components/AuthPage')
+    root.render(<StrictMode><AuthPage me={me} /></StrictMode>)
+    return
+  }
+  const { default: App } = await import('./App')
   root.render(<StrictMode><StartupBoundary><App /></StartupBoundary></StrictMode>)
-}).catch((error: unknown) => {
+}
+boot().catch((error: unknown) => {
   root.render(<FatalError detail={detailOf(error)} />)
   window.dispatchEvent(new ErrorEvent('error', { message: detailOf(error) }))
 })

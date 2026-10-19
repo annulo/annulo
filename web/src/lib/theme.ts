@@ -11,6 +11,14 @@ export function useTheme(): [Theme, () => void] {
     el.setAttribute('data-theme', t)
     el.style.colorScheme = t
   }, [t])
+  // 同一个项目开了几个窗口：别的窗口切了主题（localStorage 变了），这里跟着换；后台页面自己也听同一个事件（模板 talizen.config.ts）
+  useEffect(() => {
+    const on = (e: StorageEvent) => {
+      if (e.key === 'shuttle.theme' && (e.newValue === 'light' || e.newValue === 'dark')) setT(e.newValue)
+    }
+    window.addEventListener('storage', on)
+    return () => window.removeEventListener('storage', on)
+  }, [])
   const toggle = () => {
     const next = t === 'dark' ? 'light' : 'dark'
     try {

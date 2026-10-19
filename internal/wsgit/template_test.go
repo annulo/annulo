@@ -365,3 +365,82 @@ func TestSnapshotTreeTemplateGitignore(t *testing.T) {
 		t.Fatalf("快照里的文件不对：%v", got)
 	}
 }
+
+// 升级停在冲突上时恢复模板文件：勾的文件直接用模板新版、舍弃项目的改动，不用先解决冲突。
+// 只恢复一部分时合并照旧停着；冲突文件都换掉就完成合并，撤销回到升级前项目里的样子。
+func TestRestoreDuringConflict(t *testing.T) {
+	v1 := map[string]string{"a.ts": "a1\n", "b.ts": "b1\n"}
+	v2 := map[string]string{"a.ts": "a2\n", "b.ts": "b2\n"}
+	fakeTemplate(t, map[int]map[string]string{1: v1, 2: v2})
+	dir := project(t, v1)
+	os.WriteFile(filepath.Join(dir, "a.ts"), []byte("mine a\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.ts"), []byte("mine b\n"), 0o644)
+	tpl := Template{Site: "p/s", Cache: filepath.Join(t.TempDir(), "cache")}
+	if res, err := Upgrade(context.Background(), dir, tpl, 2); err != nil || res.Status != "conflict" || len(res.Conflicts) != 2 {
+		t.Fatalf("两个文件都该冲突：%+v %v", res, err)
+	}
+
+	sha, err := Restore(dir, []string{"a.ts"})
+	if err != nil || sha != "" {
+		t.Fatalf("还剩 b.ts 冲突：不提交、返回空串：%q %v", sha, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "a.ts")); string(b) != "a2\n" {
+		t.Fatalf("a.ts 应该是模板新版：%q", b)
+	}
+	if merging, left := Conflicts(dir); !merging || len(left) != 1 || left[0] != "b.ts" {
+		t.Fatalf("合并还停着、只剩 b.ts：%v %v", merging, left)
+	}
+
+	sha, err = Restore(dir, []string{"b.ts"})
+	if err != nil || sha == "" {
+		t.Fatalf("冲突文件都换掉了应该完成合并：%q %v", sha, err)
+	}
+	if merging, _ := Conflicts(dir); merging {
+		t.Fatal("合并应该结束")
+	}
+	if Base(dir) != 2 || len(strings.Fields(gitOut(t, dir, "log", "-1", "--format=%p"))) != 2 {
+		t.Fatalf("应该是合并提交、基准 v2：base=%d", Base(dir))
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "b.ts")); string(b) != "b2\n" {
+		t.Fatalf("b.ts 应该是模板新版：%q", b)
+	}
+
+	files, err := UndoRestore(dir, sha)
+	if err != nil || len(files) != 1 || files[0] != "b.ts" {
+		t.Fatalf("撤销只改回这次恢复的 b.ts：%v %v", files, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "b.ts")); string(b) != "mine b\n" {
+		t.Fatalf("撤销后 b.ts 回到升级前项目里的样子：%q", b)
+	}
+}
+
+// 合并停在冲突上时「用新版覆盖」：指定的冲突文件换成要合进来的那一版；还剩冲突不提交，全换掉就完成合并。
+func TestTakeIncoming(t *testing.T) {
+	v1 := map[string]string{"a.ts": "a1\n", "b.ts": "b1\n"}
+	v2 := map[string]string{"a.ts": "a2\n", "b.ts": "b2\n"}
+	fakeTemplate(t, map[int]map[string]string{1: v1, 2: v2})
+	dir := project(t, v1)
+	os.WriteFile(filepath.Join(dir, "a.ts"), []byte("mine a\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.ts"), []byte("mine b\n"), 0o644)
+	tpl := Template{Site: "p/s", Cache: filepath.Join(t.TempDir(), "cache")}
+	if res, err := Upgrade(context.Background(), dir, tpl, 2); err != nil || res.Status != "conflict" {
+		t.Fatalf("应该冲突：%+v %v", res, err)
+	}
+	if _, err := TakeIncoming(dir, []string{"c.ts"}); err == nil {
+		t.Fatal("没冲突的文件不能换")
+	}
+	if done, err := TakeIncoming(dir, []string{"a.ts"}); err != nil || done {
+		t.Fatalf("还剩 b.ts：不该完成：%v %v", done, err)
+	}
+	if done, err := TakeIncoming(dir, nil); err != nil || !done {
+		t.Fatalf("全换掉应该完成合并：%v %v", done, err)
+	}
+	for f, want := range v2 {
+		if b, _ := os.ReadFile(filepath.Join(dir, f)); string(b) != want {
+			t.Fatalf("%s = %q，应该是新版", f, b)
+		}
+	}
+	if merging, _ := Conflicts(dir); merging || Base(dir) != 2 {
+		t.Fatalf("合并应该结束、基准 v2：merging=%v base=%d", merging, Base(dir))
+	}
+}

@@ -31,7 +31,7 @@ func TestSchedulesOtherProjects(t *testing.T) {
 	}
 	creght.WriteOffline(b, creght.OfflineProject{ProjectID: "local-b", Name: "B 店"})
 
-	s := &Server{cfg: &config.Config{Dir: root}, ws: &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}}
+	s := newTestServer(&config.Config{Dir: root}, &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}, nil)
 	s.ready.Store(true)
 	s.creght = creght.NewClient(s.ws.APIHost)
 	t.Cleanup(func() { localdb.Close(s.offlineDBPath("local-b")) })

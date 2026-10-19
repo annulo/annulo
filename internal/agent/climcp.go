@@ -23,24 +23,34 @@ import (
 
 // MCPHandler 是 /_shuttle/mcp 的处理器。工具每个 MCP 会话开始时取当时的那一份（SetTools 换了，下一轮新会话就是新的）。
 func (a *Agent) MCPHandler() http.Handler {
-	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	// 每个项目一个 Agent（Fork），各有各的 token：按请求带的 token 找到是哪个项目的，用它的工具
+	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "shuttle", Version: version.Version}, nil)
-		a.mu.Lock()
-		tools := append([]piagent.AgentTool{a.requestUserInputTool()}, a.tools...)
-		a.mu.Unlock()
+		m := a.fam.byToken(bearer(r))
+		if m == nil {
+			return srv
+		}
+		m.mu.Lock()
+		tools := append([]piagent.AgentTool{m.requestUserInputTool()}, m.tools...)
+		m.mu.Unlock()
 		for _, t := range tools {
 			addMCPTool(srv, t)
 		}
 		return srv
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(a.mcpToken)) != 1 {
+		got := bearer(r)
+		m := a.fam.byToken(got)
+		if m == nil || subtle.ConstantTimeCompare([]byte(got), []byte(m.mcpToken)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+func bearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
 func newMCPToken() string {

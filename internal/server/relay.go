@@ -15,10 +15,8 @@ import (
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/i18n"
-	"github.com/annulo/annulo/internal/localdb"
 	"github.com/annulo/annulo/internal/localfn"
 	"github.com/annulo/annulo/internal/relay"
-	"github.com/annulo/annulo/internal/version"
 )
 
 // 中转（internal/relay）：手机上打开运营后台点「发布」，站点 Func 经平台转到这台电脑，在这里执行本机函数。
@@ -27,18 +25,16 @@ import (
 
 func (s *Server) newRelay() *relay.Client {
 	m := machine(s.cfg.Dir)
+	// 中转连设置里选的 creght 集群：手机调到的是这台电脑上、这个集群里的在线项目（打开着的、没打开的都算）
 	return relay.New(relay.Host{
 		APIHost: func() string {
-			if !s.ready.Load() {
-				return ""
+			if len(s.views()) == 0 || !creght.Has(s.creghtHost(), "shuttle_relay") {
+				return "" // 一个项目都没打开、或者这个 creght 没有中转（自己部署的）：不连
 			}
-			return s.ws.APIHost
+			return s.creghtHost()
 		},
 		Token: func() string {
-			if !s.ready.Load() {
-				return ""
-			}
-			tok, _ := creght.ReadToken(s.ws.APIHost)
+			tok, _ := creght.ReadToken(s.creghtHost())
 			return tok
 		},
 		MachineID:   fmt.Sprint(m["id"]),
@@ -47,17 +43,18 @@ func (s *Server) newRelay() *relay.Client {
 		Remote:      s.relayRemote,
 		Enabled:     func() bool { return s.cfg.RemoteCalls },
 		Run:         s.relayRun,
+		Inbox:       func(pid string) { go s.pullRelayProject(pid) },
 	})
 }
 
-// relayProjects 是这台电脑上能被调到的项目：本机有副本、和当前项目在同一个 creght 集群（中转连的是这个集群）。
+// relayProjects 是这台电脑上能被调到的项目：本机有副本、在中转连的 creght 集群上（离线项目不在 creght 上，手机调不到）。
 func (s *Server) relayProjects() []string {
-	if !s.ready.Load() {
-		return nil
-	}
+	host := s.creghtHost()
 	out := []string{}
-	if !s.ws.Offline { // 离线项目不在 creght 上，手机调不到
-		out = append(out, s.ws.ProjectID)
+	for _, v := range s.views() {
+		if !v.ws.Offline && v.ws.APIHost == host {
+			out = append(out, v.ws.ProjectID)
+		}
 	}
 	ents, _ := os.ReadDir(filepath.Join(s.cfg.Dir, "backends"))
 	dirs := []string{}
@@ -71,7 +68,7 @@ func (s *Server) relayProjects() []string {
 	}
 	for _, d := range dirs {
 		ws, err := creght.OpenWorkspace(d)
-		if err != nil || ws.Offline || ws.APIHost != s.ws.APIHost || slices.Contains(out, ws.ProjectID) {
+		if err != nil || ws.Offline || ws.APIHost != host || slices.Contains(out, ws.ProjectID) {
 			continue
 		}
 		out = append(out, ws.ProjectID)
@@ -83,16 +80,12 @@ func (s *Server) relayProjects() []string {
 func (s *Server) relayRemote() map[string][]string {
 	out := map[string][]string{}
 	for _, pid := range s.relayProjects() {
-		dir := s.ws.Dir
-		if pid != s.ws.ProjectID {
-			dir = s.cfg.DirFor(pid)
-		}
-		fns, _ := localfn.RemoteFns(dir)
+		fns, _ := localfn.RemoteFns(s.cfg.DirFor(pid))
 		if fns == nil {
 			fns = []string{}
 		}
-		if pid == s.ws.ProjectID {
-			fns = append(fns, remoteAIFns...) // 助手（remoteai.go）：只给电脑上正在打开的项目
+		if s.openView(pid) != nil {
+			fns = append(fns, remoteAIFns...) // 助手（remoteai.go）：只给电脑上打开着的项目
 		}
 		out[pid] = fns
 	}
@@ -100,11 +93,12 @@ func (s *Server) relayRemote() map[string][]string {
 }
 
 func (s *Server) relayRun(ctx context.Context, projectID, fn string, input any, emit func(any)) (any, error) {
-	if !s.ready.Load() {
-		return nil, i18n.New("这台电脑上的 Annulo 还没打开项目", "Annulo on this computer hasn't opened a project yet")
-	}
 	if fn = brand.RemoteName(fn); strings.HasPrefix(fn, remoteAIPrefix) { // _annulo.xxx 当作 _shuttle.xxx
-		return s.relayAI(ctx, projectID, fn, input)
+		v := s.openView(projectID)
+		if v == nil {
+			return nil, i18n.New("电脑上的 Annulo 没有打开这个项目：在电脑上打开它，手机上才能用助手", "Annulo on the computer doesn't have this project open: open it on the computer to use the assistant from the phone")
+		}
+		return v.relayAI(ctx, projectID, fn, input)
 	}
 	if creght.IsOfflineID(projectID) { // 离线项目不在 creght 上，平台转不来；转来了也不跑
 		return nil, i18n.New("离线项目不支持远程访问", "Offline projects don't support remote access")
@@ -128,24 +122,26 @@ func (s *Server) relayRun(ctx context.Context, projectID, fn string, input any, 
 	})
 }
 
-// projectHost 是在某个项目里跑本机函数的环境：当前项目就是 localHost；别的项目换成它的目录、表、日志，
-// 浏览器登录态、密钥、连接、MCP 是整台电脑共用的。
+// projectHost 是在某个项目里跑本机函数的环境：打开着的项目用它的视图；没打开的（定时任务、手机上调到它）
+// 换成它的目录、表、日志，不为跑一个函数把整个项目打开。浏览器登录态、连接（ctx.oauth）按项目分开，密钥、MCP 是整台电脑共用的。
 func (s *Server) projectHost(projectID string) (localfn.Host, error) {
-	if projectID == s.ws.ProjectID {
+	if s.ready.Load() && projectID == s.ws.ProjectID {
 		return s.localHost(), nil
 	}
-	ws, err := creght.OpenWorkspaceOn(s.cfg.DirFor(projectID), s.ws.APIHost)
+	if v := s.openView(projectID); v != nil {
+		return v.localHost(), nil
+	}
+	host := s.loginHost()
+	ws, err := creght.OpenWorkspaceOn(s.cfg.DirFor(projectID), host)
 	if err != nil || ws.ProjectID != projectID {
 		return localfn.Host{}, i18n.Errorf("这台电脑上没有项目 %s：在电脑上的 Annulo 里打开它一次", "This computer doesn't have project %s: open it once in Annulo on the computer", projectID)
 	}
-	if !ws.Offline && ws.APIHost != s.ws.APIHost {
+	if !ws.Offline && ws.APIHost != host {
 		return localfn.Host{}, i18n.New("这个项目在别的 creght 区域：在电脑上的 Annulo 里切到那个区域再试", "This project is in another creght region: switch to it in Annulo on the computer and try again")
 	}
-	h := s.localHost()
-	logs := filepath.Join(s.cfg.Dir, "logs", "local", ws.ProjectID)
-	h.WorkDir, h.LogDir = ws.Dir, logs
-	h.SnapshotDir = filepath.Join(s.cfg.Dir, "snapshots", ws.ProjectID)
-	h.Workspace = workspaceInfo(map[string]any{"project_id": ws.ProjectID, "site_id": ws.SiteID, "api_host": ws.APIHost, "shuttle_projects": s.shuttleProjects(), "shuttle_api": version.API, "logs_dir": logs, "machine": machine(s.cfg.Dir), "offline": ws.Offline})
+	// 临时视图：目录、日志、快照、浏览器、连接、素材都按那个项目；表用缓存的 otherProject；助手用最初的 Agent（ctx.llm）
+	tmp := s.view(&project{ws: ws, agent: s.root, creght: creght.NewClient(ws.APIHost)})
+	h := tmp.localHost()
 	h.DB = localDB{s.otherProject(ws)}
 	return h, nil
 }
@@ -177,12 +173,13 @@ func (s *Server) otherProject(ws *creght.Workspace) *projectDB {
 	}
 	var store tableStore = creght.NewClient(ws.APIHost)
 	if ws.Offline { // 离线项目的表在它自己的 SQLite 里
-		db, err := localdb.Open(s.offlineDBPath(ws.ProjectID))
+		db, err := s.openLocalData(ws.ProjectID)
 		if err != nil {
 			log.Printf("打开离线项目 %s 的数据库失败：%v", ws.ProjectID, err)
-		} else {
-			store = db
+			// 不缓存：下次用到再试（数据库可能只是还没起来）；这次明确报错，不落到 creght 上
+			return &projectDB{c: errStore{i18n.Errorf("项目的数据库连不上：%v", "Can't reach the project's database: %v", err)}, projectID: ws.ProjectID, tids: &tableIDs{}, isTable: isTable, tableErr: tableErr}
 		}
+		store = db
 	}
 	p := &projectDB{c: store, projectID: ws.ProjectID, tids: &tableIDs{}, isTable: isTable, tableErr: tableErr}
 	v, _ := otherProjects.LoadOrStore(key, p)
@@ -221,16 +218,21 @@ func (s *Server) apiRemoteSettings(w http.ResponseWriter, r *http.Request) {
 // 开关是这台电脑全局的，地址是每个项目各一个，所以全列出来；当前项目排第一。
 func (s *Server) remoteAddresses() []map[string]any {
 	out := []map[string]any{}
+	cur := ""
+	if s.ready.Load() {
+		cur = s.ws.ProjectID
+	}
 	for _, pid := range s.relayProjects() {
-		siteID, dir := s.ws.SiteID, s.ws.Dir
-		if pid != s.ws.ProjectID {
-			ws, err := creght.OpenWorkspace(s.cfg.DirFor(pid))
-			if err != nil {
-				continue
-			}
-			siteID, dir = ws.SiteID, ws.Dir
+		ws, err := creght.OpenWorkspace(s.cfg.DirFor(pid))
+		if err != nil {
+			continue
 		}
-		out = append(out, map[string]any{"project_id": pid, "name": s.projectName(pid, dir), "url": creght.PreviewURL(s.ws.APIHost, siteID), "current": pid == s.ws.ProjectID})
+		item := map[string]any{"project_id": pid, "name": s.projectName(pid, ws.Dir), "url": creght.PreviewURL(ws.APIHost, ws.SiteID), "current": pid == cur}
+		if pid == cur {
+			out = append([]map[string]any{item}, out...)
+		} else {
+			out = append(out, item)
+		}
 	}
 	return out
 }

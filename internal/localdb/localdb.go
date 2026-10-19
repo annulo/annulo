@@ -2,6 +2,7 @@
 // （record_list / record / record_aggregate）。
 //
 // 一个项目一个数据库文件（~/.shuttle/workspaces/<项目>/data.db，不在项目目录里：不进 git、不推）。
+// 服务端部署时可以存到 Postgres（OpenPostgres，DATABASE_URL）：所有项目一张表 annulo_records，按 project 分开；读写语义和 SQLite 一样。
 // 一张表的行全部读进内存过滤、排序、聚合：运营后台的表是几千行的量级，这样语义最好对齐，也不用把条件翻译成 SQL。
 // 写入时更新内存里的那份。只有 Shuttle 进程自己读写这个文件。
 package localdb
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"github.com/annulo/annulo/internal/creght"
@@ -29,6 +31,46 @@ type DB struct {
 	db   *sql.DB
 	mu   sync.Mutex
 	rows map[string][]*row // 表 → 行（按 id 升序）；读过一次就缓存
+	// pg：存在 Postgres 里，project 是这个库属于哪个项目（每条语句的第一个参数）
+	pg      bool
+	project string
+}
+
+// 每种存储的语句：SQLite 一个项目一个文件；Postgres 所有项目一张表，第一个参数是项目
+var sqliteSQL = map[string]string{
+	"load":   `SELECT id, body, created_at, updated_at FROM records WHERE tbl = ? ORDER BY id`,
+	"tables": `SELECT DISTINCT tbl FROM records ORDER BY tbl`,
+	"insert": `INSERT INTO records (tbl, id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+	"upsert": `INSERT OR REPLACE INTO records (tbl, id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+	"update": `UPDATE records SET body = ?, updated_at = ? WHERE tbl = ? AND id = ?`,
+	"delete": `DELETE FROM records WHERE tbl = ? AND id = ?`,
+}
+
+// id 按字节序排（COLLATE "C"）：内存里按 id 二分查找，顺序要和库里一致
+var pgSQL = map[string]string{
+	"load":   `SELECT id, body::text, created_at, updated_at FROM annulo_records WHERE project = $1 AND tbl = $2 ORDER BY id COLLATE "C"`,
+	"tables": `SELECT DISTINCT tbl FROM annulo_records WHERE project = $1 ORDER BY tbl`,
+	"insert": `INSERT INTO annulo_records (project, tbl, id, body, created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+	"upsert": `INSERT INTO annulo_records (project, tbl, id, body, created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+		ON CONFLICT (project, tbl, id) DO UPDATE SET body = EXCLUDED.body, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`,
+	"update": `UPDATE annulo_records SET body = $2::jsonb, updated_at = $3 WHERE project = $1 AND tbl = $4 AND id = $5`,
+	"delete": `DELETE FROM annulo_records WHERE project = $1 AND tbl = $2 AND id = $3`,
+}
+
+func (d *DB) exec(name string, args ...any) error {
+	if d.pg {
+		_, err := d.db.Exec(pgSQL[name], append([]any{d.project}, args...)...)
+		return err
+	}
+	_, err := d.db.Exec(sqliteSQL[name], args...)
+	return err
+}
+
+func (d *DB) query(name string, args ...any) (*sql.Rows, error) {
+	if d.pg {
+		return d.db.Query(pgSQL[name], append([]any{d.project}, args...)...)
+	}
+	return d.db.Query(sqliteSQL[name], args...)
 }
 
 type row struct {
@@ -83,12 +125,87 @@ func Open(path string) (*DB, error) {
 	return d, nil
 }
 
+var (
+	pgMu    sync.Mutex
+	pgPools = map[string]*sql.DB{} // 连接串 → 连接池，各项目共用
+)
+
+// OpenPostgres 打开 Postgres 里某个项目的业务表（dsn 是 postgres://… 连接串）。同一个项目只打开一次。
+func OpenPostgres(dsn, project string) (*DB, error) {
+	key := "pg\x00" + dsn + "\x00" + project
+	openMu.Lock()
+	defer openMu.Unlock()
+	if d := opened[key]; d != nil {
+		return d, nil
+	}
+	pgMu.Lock()
+	db := pgPools[dsn]
+	pgMu.Unlock()
+	if db == nil {
+		var err error
+		if db, err = sql.Open("pgx", dsn); err != nil {
+			return nil, err
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // 数据库连不上时别一直卡着（还持有 openMu）
+		defer cancel()
+		if _, err := db.ExecContext(cctx, `CREATE TABLE IF NOT EXISTS annulo_records (
+			project TEXT NOT NULL, tbl TEXT NOT NULL, id TEXT NOT NULL, body JSONB NOT NULL,
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			PRIMARY KEY (project, tbl, id))`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("连不上 Postgres 或建表失败：%w", err)
+		}
+		pgMu.Lock()
+		pgPools[dsn] = db
+		pgMu.Unlock()
+	}
+	d := &DB{db: db, rows: map[string][]*row{}, pg: true, project: project}
+	opened[key] = d
+	return d, nil
+}
+
+// WaitPostgres 等 Postgres 能连上（容器一起起来时数据库常常晚几秒；docker stack deploy 不管启动顺序），
+// 每次失败等一会儿再试，最多等 timeout。log 每次失败调一次（打日志）。
+func WaitPostgres(ctx context.Context, dsn string, timeout time.Duration, log func(error)) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	wait := time.Second
+	for {
+		db, err := sql.Open("pgx", dsn)
+		if err == nil {
+			pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
+			err = db.PingContext(pctx)
+			pcancel()
+			db.Close()
+		}
+		if err == nil {
+			return nil
+		}
+		if log != nil {
+			log(err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("等了 %s 还连不上 Postgres：%w", timeout, err)
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, 10*time.Second)
+	}
+}
+
+// ClosePostgres 放下某个项目（测试收尾用）；连接池留着给别的项目。
+func ClosePostgres(dsn, project string) {
+	openMu.Lock()
+	defer openMu.Unlock()
+	delete(opened, "pg\x00"+dsn+"\x00"+project)
+}
+
 // load 取一张表的全部行（调用方持有 d.mu）。
 func (d *DB) load(table string) ([]*row, error) {
 	if rs, ok := d.rows[table]; ok {
 		return rs, nil
 	}
-	q, err := d.db.Query(`SELECT id, body, created_at, updated_at FROM records WHERE tbl = ? ORDER BY id`, table)
+	q, err := d.query("load", table)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +256,7 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 // Tables 是库里有数据的表。
 func (d *DB) Tables() ([]string, error) {
-	q, err := d.db.Query(`SELECT DISTINCT tbl FROM records ORDER BY tbl`)
+	q, err := d.query("tables")
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +296,7 @@ func (d *DB) CreateRecord(_ context.Context, _, table string, body any) (string,
 	if r.body == nil {
 		r.body = map[string]any{}
 	}
-	if _, err := d.db.Exec(`INSERT INTO records (tbl, id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, table, r.id, string(b), r.createdAt, r.updatedAt); err != nil {
+	if err := d.exec("insert", table, r.id, string(b), r.createdAt, r.updatedAt); err != nil {
 		return "", err
 	}
 	d.rows[table] = append(rs, r)
@@ -196,7 +313,7 @@ func (d *DB) ImportRecord(table, id string, body json.RawMessage, createdAt, upd
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, err := d.db.Exec(`INSERT OR REPLACE INTO records (tbl, id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, table, id, string(body), createdAt, updatedAt)
+	err := d.exec("upsert", table, id, string(body), createdAt, updatedAt)
 	delete(d.rows, table)
 	return err
 }
@@ -240,7 +357,7 @@ func (d *DB) UpdateRecord(_ context.Context, _, table, id string, body any) erro
 		return fmt.Errorf("record not found: %s", id)
 	}
 	t := now()
-	if _, err := d.db.Exec(`UPDATE records SET body = ?, updated_at = ? WHERE tbl = ? AND id = ?`, string(b), t, table, id); err != nil {
+	if err := d.exec("update", string(b), t, table, id); err != nil {
 		return err
 	}
 	r := *rs[i]
@@ -260,7 +377,7 @@ func (d *DB) DeleteRecord(_ context.Context, _, table, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := d.db.Exec(`DELETE FROM records WHERE tbl = ? AND id = ?`, table, id); err != nil {
+	if err := d.exec("delete", table, id); err != nil {
 		return err
 	}
 	if i := find(rs, id); i >= 0 {

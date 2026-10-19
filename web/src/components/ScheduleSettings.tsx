@@ -8,12 +8,15 @@ import { t } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
 type Run = { started_at: string; ms: number; ok: boolean; error?: string; result?: string; chat_id?: string }
-type Job = { id: string; chat_id?: string; fn?: string; prompt?: string; task?: string; name: string; every?: string; at?: string; disabled: boolean; running: boolean; next_at?: string; last?: Run; last_ok?: string; fails: number; only_when_open?: boolean }
+type Job = { id: string; chat_id?: string; fn?: string; prompt?: string; task?: string; name: string; every?: string; at?: string; disabled: boolean; running: boolean; next_at?: string; last?: Run; last_ok?: string; fails: number; only_when_open?: boolean; due?: Due }
+// 按表里的时间字段到点跑的：表、字段、接下来要跑的行
+type Due = { table: string; field: string; upcoming: { id: string; at: string }[]; more?: number }
 type Group = { project_id: string; name: string; offline?: boolean; current?: boolean; list: Job[]; error?: string }
-type State = { list: Job[]; error: string; file: string; projects?: Group[] }
+type State = { list: Job[]; error: string; file: string; projects?: Group[]; server?: boolean }
 
 const EVERY: Record<string, string> = { m: '分钟', h: '小时', d: '天' }
 function freq(j: Job) {
+  if (j.due) return t('按表里的时间到点运行')
   if (j.at) return t('每天 {at}', { at: j.at })
   const m = j.every?.match(/^(\d+)([mhd])$/)
   return m ? t(`每 {n} ${EVERY[m[2]]}`, { n: m[1] }) : t('每 {v}', { v: j.every ?? '' })
@@ -54,6 +57,17 @@ export default function ScheduleSettings() {
     }
   }
 
+  // 一个项目的任务全部打开 / 全部关闭：逐个调 toggle（只动状态不一样的），最后一次的返回就是最新的列表
+  const [bulk, setBulk] = useState('')
+  const setAll = async (g: Group, disabled: boolean) => {
+    setBulk(g.project_id)
+    try {
+      for (const j of g.list.filter((j) => !!j.disabled !== disabled)) await act(g.project_id, j.id, 'toggle', { disabled })
+    } finally {
+      setBulk('')
+    }
+  }
+
   if (!st)
     return (
       <div className="flex justify-center py-8">
@@ -67,22 +81,35 @@ export default function ScheduleSettings() {
     <div className="space-y-6">
       {groups.map((g) => (
         <div key={g.project_id} className="space-y-2">
+          <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={g.current}
             onClick={() => setOpen((o) => ({ ...o, [g.project_id]: !o[g.project_id] }))}
             aria-expanded={g.current || !!open[g.project_id]}
-            className="flex w-full flex-wrap items-center gap-2 text-left text-xs text-muted-foreground enabled:cursor-pointer"
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-left text-xs text-muted-foreground enabled:cursor-pointer"
           >
             {!g.current && <ChevronRight className={cn('size-3.5 transition-transform', open[g.project_id] && 'rotate-90')} />}
             <span className="text-[13px] font-semibold text-foreground">{g.name}</span>
-            {g.offline && <span className="rounded bg-muted px-1.5 py-px text-[11px] font-semibold">{t('离线')}</span>}
+            {g.offline && !st.server && <span className="rounded bg-muted px-1.5 py-px text-[11px] font-semibold">{t('离线')}</span>}
             {g.current && <span className="rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary-text">{t('当前项目')}</span>}
             {!g.current && <span>{t('{n} 个任务', { n: g.list.length })}</span>}
             {!g.current && g.list.some((j) => j.last && !j.last.ok) && (
               <StatusDot tone="bad">{t('{n} 个上次失败', { n: g.list.filter((j) => j.last && !j.last.ok).length })}</StatusDot>
             )}
           </button>
+          {g.list.length > 0 && (
+            <div className="flex shrink-0 items-center gap-1 text-xs">
+              {bulk === g.project_id && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
+              <button type="button" disabled={!!bulk || g.list.every((j) => !j.disabled)} onClick={() => setAll(g, false)} className="rounded-md px-2 py-1 text-muted-foreground enabled:cursor-pointer enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40">
+                {t('全部打开')}
+              </button>
+              <button type="button" disabled={!!bulk || g.list.every((j) => j.disabled)} onClick={() => setAll(g, true)} className="rounded-md px-2 py-1 text-muted-foreground enabled:cursor-pointer enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40">
+                {t('全部关闭')}
+              </button>
+            </div>
+          )}
+          </div>
           {(g.current || open[g.project_id]) && (<>
       {g.error && <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{g.error}</div>}
       {g.list.length === 0 && !g.error ? (
@@ -94,7 +121,8 @@ export default function ScheduleSettings() {
           {g.list.map((j) => (
             <div key={j.id} className="border-b border-border px-4 py-3 last:border-b-0">
               <div className="flex flex-wrap items-center gap-3">
-                <div className="min-w-0 flex-1">
+                {/* basis：放不下时按钮整排挪到下一行，不把任务名挤成一字一行（flex-1 的基准是 0，从来不会换行） */}
+                <div className="min-w-0 flex-1 basis-56">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[13px] font-bold">{j.name || j.fn || j.id}</span>
                     <span className="text-[11px] text-muted-foreground">{freq(j)}</span>
@@ -119,11 +147,12 @@ export default function ScheduleSettings() {
                     ) : (
                       <span>{t('还没跑过')}</span>
                     )}
+                    {j.due && <span className="font-mono">{j.due.table}.{j.due.field}</span>}
                     {!j.disabled && j.next_at && !j.running && <span>{t('下次 {when}', { when: when(j.next_at) })}</span>}
                     {j.only_when_open && <span>{t('交给助手的，打开这个项目时才跑')}</span>}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="ml-auto flex shrink-0 items-center gap-2">
                   {(j.chat_id || j.last?.chat_id) && (
                     <Button variant="ghost" size="sm" onClick={() => openChat((j.chat_id || j.last?.chat_id)!)}>
                       <MessageSquare />
@@ -137,6 +166,20 @@ export default function ScheduleSettings() {
                   <Switch checked={!j.disabled} onChange={(v) => act(g.project_id, j.id, 'toggle', { disabled: !v })} label={j.disabled ? t('已暂停') : t('开启')} />
                 </div>
               </div>
+              {j.due && j.due.upcoming.length > 0 && (
+                <details className="mt-2 text-[11px] text-muted-foreground">
+                  <summary className="cursor-pointer select-none">{t('接下来要跑 {n} 行', { n: j.due.upcoming.length + (j.due.more ?? 0) })}</summary>
+                  <ul className="mt-1 space-y-0.5 pl-3">
+                    {j.due.upcoming.map((r) => (
+                      <li key={r.id} className="flex gap-3">
+                        <span className="w-24 shrink-0">{when(r.at)}</span>
+                        <span className="truncate font-mono">{r.id}</span>
+                      </li>
+                    ))}
+                    {!!j.due.more && <li>{t('还有 {n} 行', { n: j.due.more })}</li>}
+                  </ul>
+                </details>
+              )}
               {j.last && !j.last.ok && j.last.error && (
                 <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs break-all text-destructive">{j.last.error}</div>
               )}

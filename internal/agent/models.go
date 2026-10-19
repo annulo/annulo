@@ -53,19 +53,29 @@ type creghtModels struct {
 	at   time.Time
 }
 
+// cm 是共用的 creght 模型缓存（测试里直接拼的 Agent 没有，给个空的）。
+func (a *Agent) cm() *creghtModels {
+	if a.creght == nil {
+		return &creghtModels{}
+	}
+	return a.creght
+}
+
 // SetCreghtHost 设置 creght 服务商用哪个集群（跟着运营后台 / 登录走）。
 func (a *Agent) SetCreghtHost(host string) {
-	a.creght.mu.Lock()
-	defer a.creght.mu.Unlock()
-	if a.creght.host != host {
-		a.creght.host, a.creght.list, a.creght.err, a.creght.at = host, nil, nil, time.Time{}
+	c := a.cm()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.host != host {
+		c.host, c.list, c.err, c.at = host, nil, nil, time.Time{}
 	}
 }
 
 func (a *Agent) creghtHost() string {
-	a.creght.mu.Lock()
-	defer a.creght.mu.Unlock()
-	return a.creght.host
+	c := a.cm()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.host
 }
 
 // creghtEndpoint 是 creght 服务商此刻给模型 m 的协议、地址和凭据：凭据就是 creght CLI 登录的 token，每次现取，
@@ -101,7 +111,7 @@ func (a *Agent) creghtApi(m config.LLM) string {
 // RefreshCreghtModels 拉平台的模型列表（有缓存：成功的留 5 分钟，失败的 30 秒后再试）。
 // 不要在持有 a.mu 时调用：它会发网络请求。
 func (a *Agent) RefreshCreghtModels(ctx context.Context, force bool) ([]config.LLM, error) {
-	c := &a.creght
+	c := a.cm()
 	c.mu.Lock()
 	ttl := 5 * time.Minute
 	if c.err != nil {
@@ -114,7 +124,11 @@ func (a *Agent) RefreshCreghtModels(ctx context.Context, force bool) ([]config.L
 	host := c.host
 	c.mu.Unlock()
 
-	list, err := fetchCreghtModels(ctx, host)
+	var list []config.LLM
+	var err error
+	if creght.Has(host, "llm") { // 自己部署的 creght 没有平台模型
+		list, err = fetchCreghtModels(ctx, host)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,9 +139,10 @@ func (a *Agent) RefreshCreghtModels(ctx context.Context, force bool) ([]config.L
 }
 
 func (a *Agent) cachedCreghtModels() ([]config.LLM, error) {
-	a.creght.mu.Lock()
-	defer a.creght.mu.Unlock()
-	return a.creght.list, a.creght.err
+	c := a.cm()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.list, c.err
 }
 
 // fetchCreghtModels：GET /api/p/ai/llm/v1/models，OpenAI 的列表格式，平台在每个模型上多给了
@@ -178,7 +193,9 @@ func (a *Agent) models() []config.LLM {
 }
 
 // disabled：这个服务商被关掉了（调用方持有 a.mu）。
-func (a *Agent) disabled(provider string) bool { return slices.Contains(a.cfg.DisabledProviders, provider) }
+func (a *Agent) disabled(provider string) bool {
+	return slices.Contains(a.cfg.DisabledProviders, provider)
+}
 
 // ProviderEndpoint 是服务商 id 此刻的地址和凭据（本机函数的 ctx.llm.fetch 用）。creght 平台给 OpenAI 兼容的根地址
 // <api host>/api/p/ai/llm/v1 和登录 token；本机 agent 没有地址；关掉的服务商不给用。
@@ -306,6 +323,189 @@ func (a *Agent) SetTitleSettings(on *bool, model *string) error {
 		a.cfg.TitleModel = *model
 	}
 	return a.cfg.Save()
+}
+
+// BrowserModel 是浏览器助手（b.act）用的模型，空 = 跟对话用同一个。
+func (a *Agent) BrowserModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.BrowserModel
+}
+
+// SetBrowserModel 改浏览器助手用的模型，"" 表示跟对话用同一个。
+func (a *Agent) SetBrowserModel(model string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if model != "" && a.byID(model, config.LLM{}).ID == "" {
+		return i18n.Errorf("没有这个模型：%s", "No such model: %s", model)
+	}
+	a.cfg.BrowserModel = model
+	return a.cfg.Save()
+}
+
+// SmallThinking 是起名（"title"）、浏览器助手（"browser"）调模型时的思考强度，空 = off。
+func (a *Agent) SmallThinking(kind string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if kind == "browser" {
+		return a.cfg.BrowserThinking
+	}
+	return a.cfg.TitleThinking
+}
+
+// SetSmallThinking 改起名、浏览器助手的思考强度（config.ThinkingLevels 里的一档，"" 等于 off）。
+func (a *Agent) SetSmallThinking(kind, level string) error {
+	if level != "" && !slices.Contains(config.ThinkingLevels, level) {
+		return i18n.Errorf("思考强度只能是 %s", "Thinking level must be %s", strings.Join(config.ThinkingLevels, " / "))
+	}
+	if level == "off" {
+		level = ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if kind == "browser" {
+		a.cfg.BrowserThinking = level
+	} else {
+		a.cfg.TitleThinking = level
+	}
+	return a.cfg.Save()
+}
+
+// BrowserDebug：浏览器助手要不要把每一步的详细过程写进运行日志。
+func (a *Agent) BrowserDebug() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.BrowserDebug
+}
+
+// SetBrowserDebug 打开、关掉浏览器助手的调试日志。
+func (a *Agent) SetBrowserDebug(on bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.BrowserDebug = on
+	return a.cfg.Save()
+}
+
+func smallThinking(level string) agent.ThinkingLevel {
+	if level == "" {
+		return agent.ThinkOff
+	}
+	return agent.ThinkingLevel(level)
+}
+
+// CompleteBrowser 是浏览器助手（本机函数里的 b.act）调模型：用设置里选的浏览器助手模型（不在了就用当前模型）和思考强度（默认不思考，要快）。
+func (a *Agent) CompleteBrowser(ctx context.Context, system, prompt string) (string, error) {
+	a.mu.Lock()
+	model, thinking := a.cfg.BrowserModel, a.cfg.BrowserThinking
+	if model != "" && a.byID(model, config.LLM{}).ID == "" {
+		model = ""
+	}
+	a.mu.Unlock()
+	return a.complete(ctx, system, prompt, model, smallThinking(thinking))
+}
+
+// CompleteAgent 是浏览器助手做完一整件事（本机函数里的 b.agent，docs/browser-agent.md）调模型：和 b.act 一样用设置里选的浏览器助手模型（没选用对话的模型），
+// 但不思考：一件事要问十几轮，每轮都思考太慢（2026-10-19 B站 投稿一步 5～16 秒）
+func (a *Agent) CompleteAgent(ctx context.Context, system, prompt string) (string, error) {
+	a.mu.Lock()
+	model := a.cfg.BrowserModel
+	if model != "" && a.byID(model, config.LLM{}).ID == "" {
+		model = ""
+	}
+	a.mu.Unlock()
+	return a.complete(ctx, system, prompt, model, agent.ThinkOff)
+}
+
+// ToolSpec 是给模型的一个工具（函数调用）：名字、说明、参数的 JSON Schema
+type ToolSpec struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Params      map[string]any `json:"params"`
+}
+
+// ToolCallOut 是模型调用的一个工具
+type ToolCallOut struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
+}
+
+// ToolsAnswer 是 CompleteAgentTools 的回答：一句想法、调用的工具，和这次的用量（页面上显示每次发布花了多少 token）
+type ToolsAnswer struct {
+	Text       string
+	Calls      []ToolCallOut
+	Model      string // 用的模型（名字）
+	Input      int
+	Output     int
+	CacheRead  int
+	CacheWrite int
+}
+
+// ErrNoToolCalls：这个模型走不了函数调用（Claude Code / Codex 这类本机 agent），调用方退回让模型写 JSON 文字
+var ErrNoToolCalls = errors.New("this model can't do tool calls")
+
+// CompleteAgentTools 和 CompleteAgent 一样选模型、不思考，但用模型商原生的函数调用（tools）：
+// b.agent 的每个动作都是一个工具，模型直接回结构化的调用（一次可以好几个），比让它在文字里写 JSON 稳得多，小模型也行。
+// 返回模型说的话（一句想法）和它调用的工具
+func (a *Agent) CompleteAgentTools(ctx context.Context, system, prompt string, tools []ToolSpec) (*ToolsAnswer, error) {
+	a.RefreshCreghtModels(ctx, false)
+	a.mu.Lock()
+	cur := a.current()
+	if m := a.cfg.BrowserModel; m != "" && a.byID(m, config.LLM{}).ID != "" {
+		cur = a.byID(m, cur)
+	}
+	l, err := a.cfg.Resolve(cur, a.creghtEndpoint)
+	a.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if IsCLIProvider(l.Provider) {
+		return nil, ErrNoToolCalls
+	}
+	m, key, err := modelFor(l)
+	if err != nil {
+		return nil, err
+	}
+	ts := make([]ai.Tool, 0, len(tools))
+	for _, t := range tools {
+		var sch ai.Schema
+		b, _ := json.Marshal(t.Params)
+		if err := json.Unmarshal(b, &sch); err != nil {
+			return nil, fmt.Errorf("tool %s: %w", t.Name, err)
+		}
+		ts = append(ts, ai.Tool{Name: t.Name, Description: t.Description, Parameters: &sch})
+	}
+	msg := ai.CompleteSimple(ctx, m, ai.Context{
+		SystemPrompt: system,
+		Messages:     []ai.Message{ai.UserMessage{Content: ai.ContentList{ai.TextContent{Text: prompt}}, Timestamp: time.Now().UnixMilli()}},
+		Tools:        ts,
+	}, &ai.SimpleStreamOptions{StreamOptions: ai.StreamOptions{ProviderRequestOptions: ai.ProviderRequestOptions{APIKey: key}}})
+	if msg == nil {
+		return nil, errors.New("no answer")
+	}
+	if msg.ErrorMessage != "" {
+		return nil, errors.New(msg.ErrorMessage)
+	}
+	a.recordUsage("local", msg)
+	var text strings.Builder
+	ans := &ToolsAnswer{Model: cur.Name, Input: msg.Usage.Input, Output: msg.Usage.Output, CacheRead: msg.Usage.CacheRead, CacheWrite: msg.Usage.CacheWrite}
+	if ans.Model == "" {
+		ans.Model = m.ID
+	}
+	calls := ans.Calls
+	for _, c := range msg.Content {
+		switch v := c.(type) {
+		case ai.TextContent:
+			text.WriteString(v.Text)
+		case *ai.TextContent:
+			text.WriteString(v.Text)
+		case ai.ToolCall:
+			calls = append(calls, ToolCallOut{Name: v.Name, Args: v.Arguments})
+		case *ai.ToolCall:
+			calls = append(calls, ToolCallOut{Name: v.Name, Args: v.Arguments})
+		}
+	}
+	ans.Text, ans.Calls = strings.TrimSpace(text.String()), calls
+	return ans, nil
 }
 
 // cheapestCreght 是平台模型里按 token 构成折算最便宜的；一样便宜的保持平台的顺序。
@@ -628,6 +828,13 @@ func (a *Agent) complete(ctx context.Context, system, prompt, model string, thin
 	if model != "" {
 		cur = a.byID(model, cur)
 	}
+	a.mu.Unlock()
+	return a.completeLLM(ctx, cur, system, prompt, thinking)
+}
+
+// completeLLM 用指定的模型答一次（complete 和 ctx.llm 指定了模型时用）。
+func (a *Agent) completeLLM(ctx context.Context, cur config.LLM, system, prompt string, thinking agent.ThinkingLevel) (string, error) {
+	a.mu.Lock()
 	l, err := a.cfg.Resolve(cur, a.creghtEndpoint)
 	a.mu.Unlock()
 	if err != nil {
@@ -637,7 +844,7 @@ func (a *Agent) complete(ctx context.Context, system, prompt, model string, thin
 		system = "你是一个严谨的助手，直接给出答案，不要寒暄。"
 	}
 	if IsCLIProvider(l.Provider) {
-		return cliComplete(ctx, l.Provider, system, prompt)
+		return cliComplete(ctx, l.Provider, cliModel(l), system, prompt)
 	}
 	m, key, err := modelFor(l)
 	if err != nil {

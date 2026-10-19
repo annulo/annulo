@@ -25,7 +25,7 @@ export function UpdateDialog({ update, onDownload, onInstall, onClose }: { updat
               {t('当前是 {current}', { current })}
               {bytes ? ` · ${t('安装包 {size} MB', { size: mb(bytes) })}` : ''}
             </div>
-            {notes && <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{notes}</p>}
+            {notes && <p className="mt-2 max-h-60 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{notes}</p>}
           </div>
 
           {state === 'downloading' && (

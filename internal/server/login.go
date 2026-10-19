@@ -1,13 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/i18n"
 
 	"github.com/annulo/annulo/internal/creght"
@@ -45,7 +49,7 @@ func (s *Server) creghtHost() string {
 func (s *Server) apiCreghtClusterGet(w http.ResponseWriter, r *http.Request) {
 	cur := s.loginHost()
 	var shown []creght.Cluster
-	for _, c := range creght.Clusters {
+	for _, c := range creght.AllClusters() {
 		if !c.Hidden || c.Host == cur {
 			shown = append(shown, c)
 		}
@@ -57,7 +61,7 @@ func (s *Server) apiCreghtClusterGet(w http.ResponseWriter, r *http.Request) {
 		go func() { // 各集群的模板列表一起读，一个连不上不拖着别的
 			defer wg.Done()
 			_, tokErr := creght.ReadToken(c.Host)
-			list[i] = map[string]any{"host": c.Host, "name": c.Name(), "logged_in": tokErr == nil, "templates": len(templatesOn(c.Host))}
+			list[i] = map[string]any{"host": c.Host, "name": c.Name(), "logged_in": tokErr == nil, "templates": len(templatesOn(c.Host)), "custom": c.Custom}
 		}()
 	}
 	wg.Wait()
@@ -81,8 +85,14 @@ func (s *Server) apiCreghtClusterSet(w http.ResponseWriter, r *http.Request) {
 		s.apiCreghtClusterGet(w, r)
 		return
 	}
-	detach := s.ready.Load() && s.ws.APIHost != c.Host
-	if detach && s.agent.Busy() {
+	// 离线项目不属于哪个集群：换到新集群重新打开（creght 服务商、creght MCP 跟着换），在线项目才关掉。打开着的项目都这样处理
+	var moved []*Server
+	for _, v := range s.views() {
+		if v.ws.APIHost != c.Host {
+			moved = append(moved, v)
+		}
+	}
+	if len(moved) > 0 && len(s.root.AllRunningChats()) > 0 {
 		fail(w, http.StatusConflict, i18n.New("运营助手正在执行，等它做完再切换", "The assistant is working; wait until it finishes before switching"))
 		return
 	}
@@ -90,24 +100,139 @@ func (s *Server) apiCreghtClusterSet(w http.ResponseWriter, r *http.Request) {
 	if c.Host == creght.DefaultHost {
 		s.cfg.Creght = ""
 	}
-	if detach {
-		s.cfg.Backend = ""
+	for _, v := range moved {
+		if !v.ws.Offline && s.cfg.Backend == v.ws.ProjectID {
+			s.cfg.Backend = ""
+		}
 	}
 	if err := s.cfg.Save(); err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	if detach {
-		s.Detach()
+	for _, v := range moved {
+		v.Detach()
+		if v.ws.Offline {
+			if ws, err := creght.OpenWorkspaceOn(v.ws.Dir, c.Host); err == nil {
+				s.activate(ws)
+			} else {
+				log.Printf("换集群后重新打开离线项目失败：%v", err)
+			}
+		}
 	}
-	s.agent.SetCreghtHost(s.loginHost())
-	os.Setenv("CREGHT_API_HOST", s.loginHost())
+	s.root.SetCreghtHost(c.Host) // creght 模型缓存是所有项目共用的
+	os.Setenv("CREGHT_API_HOST", c.Host)
 	s.apiCreghtClusterGet(w, r)
+}
+
+// apiCreghtCustom：自己部署的 creght（独立部署版，weave docs/architecture/selfhost-export.md）。
+// POST {host, token, name}：读它的 system_info 确认是 creght、用管理员令牌调 /api/p/self 确认令牌对，记下来并切过去；
+// DELETE ?host=：断开、忘掉这个地址（正在用的话换回 creght.cn）。
+func (s *Server) apiCreghtCustom(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		host := creght.NormHost(r.URL.Query().Get("host"))
+		if _, ok := s.cfg.CreghtCustom[host]; !ok {
+			fail(w, http.StatusNotFound, i18n.New("没有这个地址", "No such address"))
+			return
+		}
+		cur := s.loginHost()
+		creght.Disconnect(host)
+		delete(s.cfg.CreghtCustom, host)
+		s.cfg.Save()
+		creght.SetCustom(s.cfg.CreghtCustom)
+		if cur == host {
+			s.switchClusterTo(w, r, creght.DefaultHost)
+			return
+		}
+		s.apiCreghtClusterGet(w, r)
+		return
+	}
+	var in struct{ Host, Token, Name string }
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	host := creght.NormHost(in.Host)
+	if !strings.HasPrefix(host, "https://") && !strings.HasPrefix(host, "http://") {
+		fail(w, http.StatusBadRequest, i18n.New("地址写成 https://creght.example.com 这样", "Use an address like https://creght.example.com"))
+		return
+	}
+	if creght.ClusterOf(host) != nil && !creght.ClusterOf(host).Custom {
+		fail(w, http.StatusBadRequest, i18n.New("这是 creght 官方的区域，直接在上面选它、用账号连接", "That's an official creght region: pick it above and connect with your account"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if _, err := creght.FetchSystemInfo(ctx, host); err != nil {
+		fail(w, http.StatusBadGateway, i18n.Errorf("连不上 %s，或者它不是 creght：%v", "Can't reach %s, or it isn't creght: %v", host, err))
+		return
+	}
+	if err := creght.StoreStaticToken(host, strings.TrimSpace(in.Token)); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := creght.NewClient(host).Self(ctx); err != nil {
+		creght.Disconnect(host)
+		fail(w, http.StatusUnauthorized, i18n.Errorf("令牌不对（部署时写在 .env 里的 SELFHOST__ADMIN_TOKENS）：%v", "The token is wrong (it's SELFHOST__ADMIN_TOKENS from the deployment's .env): %v", err))
+		return
+	}
+	if s.cfg.CreghtCustom == nil {
+		s.cfg.CreghtCustom = map[string]string{}
+	}
+	s.cfg.CreghtCustom[host] = strings.TrimSpace(in.Name)
+	creght.SetCustom(s.cfg.CreghtCustom)
+	s.switchClusterTo(w, r, host)
+}
+
+// apiCreghtToken：POST {token} 用个人访问令牌连当前的 creght 区域（服务端部署：OAuth 只能回调本机，服务器上用不了）。
+// 平台的能力清单里有 pat 才行；用 /api/p/self 校验，和 OAuth 连上的一样用（静态令牌，不刷新）。
+func (s *Server) apiCreghtToken(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Token string }
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	host := s.loginHost()
+	if !creght.Has(host, "pat") {
+		fail(w, http.StatusBadRequest, i18n.Errorf("%s 还不支持个人访问令牌", "%s doesn't support personal access tokens yet", host))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if err := creght.StoreStaticToken(host, strings.TrimSpace(in.Token)); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := creght.NewClient(host).Self(ctx); err != nil {
+		creght.Disconnect(host)
+		fail(w, http.StatusUnauthorized, i18n.Errorf("令牌不对或者过期了：%v", "The token is wrong or expired: %v", err))
+		return
+	}
+	s.user.mu.Lock()
+	s.user.user, s.user.failedAt = nil, time.Time{}
+	s.user.mu.Unlock()
+	s.ensureCreghtMCP(host)
+	s.root.RefreshCreghtModels(ctx, true)
+	s.relay.Reconnect()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// switchClusterTo 换到某个集群（照 apiCreghtClusterSet），回集群列表。
+func (s *Server) switchClusterTo(w http.ResponseWriter, r *http.Request, host string) {
+	b, _ := json.Marshal(map[string]string{"host": host})
+	r2 := r.Clone(r.Context())
+	r2.Method = http.MethodPut
+	r2.Body = io.NopCloser(bytes.NewReader(b))
+	s.apiCreghtClusterSet(w, r2)
 }
 
 func (s *Server) apiLoginStart(w http.ResponseWriter, r *http.Request) {
 	host := s.loginHost()
-	authURL, state, err := creght.StartOAuth(r.Context(), host, "http://"+s.cfg.Addr()+brand.URLPrefix+"oauth/callback")
+	cb := s.callbackURL(r)
+	if cb == "" {
+		fail(w, http.StatusBadRequest, errNeedHTTPS)
+		return
+	}
+	authURL, state, err := creght.StartOAuth(r.Context(), host, cb)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)
 		return
@@ -209,7 +334,7 @@ func (s *Server) signedIn() bool {
 
 // apiLogout 断开 creght 连接：删掉本机存的 token。
 func (s *Server) apiLogout(w http.ResponseWriter, r *http.Request) {
-	if s.agent.Busy() {
+	if len(s.root.AllRunningChats()) > 0 {
 		fail(w, http.StatusConflict, i18n.New("助手还在执行任务，先停止或等它做完再断开 creght", "The assistant is still working; stop it or wait until it finishes before disconnecting creght"))
 		return
 	}
@@ -226,6 +351,12 @@ func (s *Server) apiLogout(w http.ResponseWriter, r *http.Request) {
 	switched := s.ready.Load() && !s.ws.Offline
 	if switched {
 		s.openOfflineFallback()
+	} else if s.ready.Load() {
+		s.ensureCreghtMCP(s.ws.APIHost) // 断开了：去掉 creght MCP
 	}
-	writeJSON(w, map[string]any{"ok": true, "switched": switched})
+	res := map[string]any{"ok": true, "switched": switched}
+	if switched && s.cfg.Backend != "" {
+		res["project_url"] = s.projectURLFor(r, s.cfg.Backend) // 这个窗口的在线项目关掉了：界面跳到换上的离线项目
+	}
+	writeJSON(w, res)
 }

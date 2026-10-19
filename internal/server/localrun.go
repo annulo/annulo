@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/annulo/annulo/internal/browser"
 	"io"
 	"log"
 	"mime"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,14 +42,44 @@ import (
 const localRunTimeout = 60 * time.Minute
 
 type localRun struct {
-	id     string
-	fn     string
-	cancel context.CancelFunc
+	id      string
+	fn      string
+	started time.Time
+	cancel  context.CancelFunc
+	// offscreen：这次运行要无界面打开的浏览器改用屏幕外的真窗口（页面要求的，local/run 的 browser: "offscreen"），
+	// 「在前台看」才调得出来
+	offscreen bool
+	pages     []*browser.Page // 这次运行正开着的浏览器（browserHost 记）
+	// wantShow：用户点了「打开看」时还没打开浏览器，打开了就显示（browserHost）
+	wantShow bool
 
 	mu     sync.Mutex
 	events []map[string]any
 	done   bool
 	wake   chan struct{} // 有新事件就关掉换一个，等着的连接醒来
+}
+
+func (r *localRun) wantsShow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.wantShow
+}
+
+func (r *localRun) addPage(p *browser.Page) {
+	r.mu.Lock()
+	r.pages = append(r.pages, p)
+	r.mu.Unlock()
+}
+
+func (r *localRun) removePage(p *browser.Page) {
+	r.mu.Lock()
+	for i, x := range r.pages {
+		if x == p {
+			r.pages = append(r.pages[:i], r.pages[i+1:]...)
+			break
+		}
+	}
+	r.mu.Unlock()
 }
 
 func (r *localRun) push(ev map[string]any, final bool) {
@@ -68,24 +100,52 @@ func (s *Server) localHost() localfn.Host {
 	return localfn.Host{
 		LogDir:        filepath.Join(s.cfg.Dir, "logs", "local", s.ws.ProjectID),
 		WorkDir:       s.ws.Dir,
-		Workspace:     workspaceInfo(map[string]any{"project_id": s.ws.ProjectID, "site_id": s.ws.SiteID, "api_host": s.ws.APIHost, "shuttle_projects": s.shuttleProjects(), "shuttle_api": version.API, "logs_dir": filepath.Join(s.cfg.Dir, "logs", "local", s.ws.ProjectID), "machine": machine(s.cfg.Dir), "offline": s.ws.Offline}),
+		Workspace:     workspaceInfo(map[string]any{"project_id": s.ws.ProjectID, "site_id": s.ws.SiteID, "api_host": s.ws.APIHost, "shuttle_projects": s.shuttleProjects(), "shuttle_api": version.API, "logs_dir": filepath.Join(s.cfg.Dir, "logs", "local", s.ws.ProjectID), "machine": machine(s.cfg.Dir), "offline": s.ws.Offline, "work_dir": s.workFilesDir()}),
 		DB:            localDB{s.cur()},
 		Secret:        s.secrets.Get,
 		Fetch:         s.fetchWithAssets,
 		Download:      s.downloadWithAssets,
+		Upload:        s.uploadHost(s.ws),
 		LLM:           s.agent.Complete,
+		LLMAsk:        s.llmAsk,
 		LLMProviders:  s.llmProviders,
 		LLMFetch:      s.llmFetch,
 		MCP:           s.mcp.Call,
 		MCPServers:    s.mcpServers,
 		AgentCurrent:  s.agentCurrent,
-		OAuth:         s.conns.Token,
-		OAuthAccounts: s.conns.Accounts,
-		Browser:       browserHost{s.browser},
+		OAuth:         s.oauthToken(s.ws.ProjectID),
+		OAuthAccounts: s.oauthAccounts(s.ws.ProjectID),
+		Browser:       s.browserFor(nil, s.ws.ProjectID),                     // 服务器上转给节点（nodes.go）
+		BrowserDebug:  s.agent.BrowserDebug,                                  // 设置里的「记录每一步的详细过程」
+		AgentTools:    s.agentTools,                                          // b.agent 用函数调用问模型
+		AgentLLM:      s.agent.CompleteAgent,                                 // b.agent 浏览器助手做完一件事（docs/browser-agent.md）
+		BrowserLLM:    s.agent.CompleteBrowser,                               // b.act 浏览器助手（docs/browser-act.md）
+		ActCache:      filepath.Join(s.cfg.Dir, "cache", "browser-act.json"), // b.act 记下来的解法，各项目共用（按网站 + 目标记）
 		// 按项目分开：修复时助手只看这个项目的
 		SnapshotDir: filepath.Join(s.cfg.Dir, "snapshots", s.ws.ProjectID),
 		FilesDir:    s.localFilesDir(), // b.upload 的 local:<name>（localfiles.go）
+		WorkFiles:   s.workFilesDir(),  // ctx.fs（workfiles.go）
+		Open:        s.openForFns(),
 	}
+}
+
+// oauthToken、oauthAccounts 是 ctx.oauth：连接按项目分开，本机函数只拿得到自己项目连的账号
+func (s *Server) oauthToken(project string) func(ctx context.Context, provider, account string) (string, error) {
+	return func(ctx context.Context, provider, account string) (string, error) {
+		return s.conns.Token(ctx, project, provider, account)
+	}
+}
+
+func (s *Server) oauthAccounts(project string) func(provider string) ([]string, error) {
+	return func(provider string) ([]string, error) { return s.conns.Accounts(project, provider) }
+}
+
+// connProject 是设置 → 连接 管的项目：当前打开的那个，没打开是空（连接接口会提示先打开项目）
+func (s *Server) connProject() string {
+	if !s.ready.Load() {
+		return ""
+	}
+	return s.ws.ProjectID
 }
 
 // agentCurrent 是 ctx.agent.current()：复用助手自己的判断（agent.LLM），和点了任务后实际跑的是同一个模型
@@ -149,14 +209,20 @@ func (s *Server) apiLocalRun(w http.ResponseWriter, r *http.Request) {
 		Fn     string `json:"fn"`
 		Input  any    `json:"input"`
 		ChatID string `json:"chat_id"` // 助手在对话里用 annulo run 跑的：哪段对话（ctx.chat_id）
+		// Browser 为 "offscreen"：这次打开的浏览器用屏幕外的真窗口，不用无界面的，页面能让它显示到前台（local/runs/<id>/show）
+		Browser string `json:"browser"`
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err := json.Unmarshal(b, &in); err != nil || in.Fn == "" {
 		fail(w, http.StatusBadRequest, i18n.New("要给出 fn（比如 geo.check）和 input", "fn (e.g. geo.check) and input are required"))
 		return
 	}
+	if err := s.readonlyRun(r, in.Fn); err != nil { // 服务端部署的只读账号（authz.go）
+		fail(w, http.StatusForbidden, err)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), localRunTimeout)
-	run := &localRun{id: fmt.Sprintf("r%d", time.Now().UnixNano()), fn: in.Fn, cancel: cancel, wake: make(chan struct{})}
+	run := &localRun{id: fmt.Sprintf("r%d", time.Now().UnixNano()), started: time.Now(), fn: in.Fn, cancel: cancel, offscreen: in.Browser == "offscreen", wake: make(chan struct{})}
 	s.local.mu.Lock()
 	if s.local.runs == nil {
 		s.local.runs = map[string]*localRun{}
@@ -166,13 +232,17 @@ func (s *Server) apiLocalRun(w http.ResponseWriter, r *http.Request) {
 
 	host := s.localHost()
 	host.RunID = run.id
+	host.Browser = s.browserFor(run, s.ws.ProjectID)
+	if remoteOf(r) != nil {
+		host.Open = nil // 远程访问：用户不在电脑前面，ctx.fs.canOpen 是 false，页面改成新标签页打开预览（remote.go）
+	}
 	if agent.ValidChatID(in.ChatID) {
 		host.ChatID = in.ChatID
 	}
 	go func() {
 		defer cancel()
 		start := time.Now()
-		res, err := localfn.Run(ctx, host, in.Fn, in.Input, func(e localfn.Event) {
+		res, err := s.runFn(ctx, host, in.Fn, in.Input, func(e localfn.Event) {
 			run.push(map[string]any{"type": e.Type, "data": e.Data}, false)
 		})
 		ms := time.Since(start).Milliseconds()
@@ -228,6 +298,86 @@ func (s *Server) streamLocalRun(w http.ResponseWriter, r *http.Request, run *loc
 			return
 		}
 	}
+}
+
+// apiLocalBrowsers：GET local/browsers，页面上发起的运行里正开着浏览器的（外壳右上角的列表）：
+// 哪个函数、哪个 profile（账号）、现在在哪个网址、最近一步的进度。点一个调 local/runs/<id>/show 呼出到前台，× 调 abort 停掉
+func (s *Server) apiLocalBrowsers(w http.ResponseWriter, r *http.Request) {
+	s.local.mu.Lock()
+	runs := make([]*localRun, 0, len(s.local.runs))
+	for _, run := range s.local.runs {
+		runs = append(runs, run)
+	}
+	s.local.mu.Unlock()
+	type item struct {
+		RunID   string `json:"run_id"`
+		Fn      string `json:"fn"`
+		Profile string `json:"profile"`
+		URL     string `json:"url"`
+		Step    string `json:"step"`
+		Started string `json:"started"`
+	}
+	list := []item{}
+	for _, run := range runs {
+		run.mu.Lock()
+		pages := append([]*browser.Page(nil), run.pages...)
+		done := run.done
+		step := ""
+		for i := len(run.events) - 1; i >= 0; i-- {
+			if run.events[i]["type"] == "progress" {
+				if d, ok := run.events[i]["data"].(map[string]any); ok {
+					step, _ = d["message"].(string)
+				}
+				break
+			}
+		}
+		run.mu.Unlock()
+		if done {
+			continue
+		}
+		for _, p := range pages {
+			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+			u, _ := p.URL(ctx)
+			cancel()
+			list = append(list, item{RunID: run.id, Fn: run.fn, Profile: p.Profile(), URL: u, Step: step, Started: run.started.Format(time.RFC3339)})
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Started < list[j].Started })
+	writeJSON(w, map[string]any{"list": list})
+}
+
+// apiLocalShow 把这次运行正开着的浏览器窗口调到前台（页面上的「在前台看」）。没开浏览器、无界面跑的，说清楚为什么看不到
+func (s *Server) apiLocalShow(w http.ResponseWriter, r *http.Request, id string) {
+	s.local.mu.Lock()
+	run := s.local.runs[id]
+	s.local.mu.Unlock()
+	if run == nil {
+		fail(w, http.StatusNotFound, i18n.New("没有这次运行（可能早就结束了）", "No such run (it may have finished long ago)"))
+		return
+	}
+	run.mu.Lock()
+	pages := append([]*browser.Page(nil), run.pages...)
+	done := run.done
+	run.mu.Unlock()
+	if done {
+		fail(w, http.StatusConflict, i18n.New("已经跑完了，浏览器也关了", "It has finished and the browser is closed"))
+		return
+	}
+	if len(pages) == 0 {
+		// 还没打开浏览器：记下来，打开了就显示（browserHost.Open）
+		run.mu.Lock()
+		run.wantShow = true
+		run.mu.Unlock()
+		writeJSON(w, map[string]any{"ok": true, "pending": true})
+		return
+	}
+	for _, p := range pages {
+		if err := p.Reveal(r.Context()); err != nil {
+			fail(w, http.StatusConflict, err)
+			return
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func (s *Server) apiLocalAbort(w http.ResponseWriter, id string) {
@@ -640,4 +790,24 @@ func (s *Server) shuttleProjects() []string {
 	}
 	c.ids, c.at = ids, time.Now()
 	return ids
+}
+
+// agentTools 是 b.agent 的函数调用：转给 agent.CompleteAgentTools，模型走不了函数调用时返回 localfn.ErrNoToolCalls
+func (s *Server) agentTools(ctx context.Context, system, prompt string, tools []localfn.AgentTool) (*localfn.AgentReply, error) {
+	specs := make([]agent.ToolSpec, len(tools))
+	for i, t := range tools {
+		specs[i] = agent.ToolSpec{Name: t.Name, Description: t.Description, Params: t.Params}
+	}
+	ans, err := s.agent.CompleteAgentTools(ctx, system, prompt, specs)
+	if errors.Is(err, agent.ErrNoToolCalls) {
+		return nil, localfn.ErrNoToolCalls
+	}
+	if err != nil {
+		return nil, err
+	}
+	rep := &localfn.AgentReply{Text: ans.Text, Usage: localfn.AgentUsage{Model: ans.Model, Input: ans.Input, Output: ans.Output, CacheRead: ans.CacheRead, CacheWrite: ans.CacheWrite}}
+	for _, c := range ans.Calls {
+		rep.Calls = append(rep.Calls, localfn.AgentCall{Name: c.Name, Args: c.Args})
+	}
+	return rep, nil
 }

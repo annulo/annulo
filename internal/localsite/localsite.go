@@ -115,6 +115,20 @@ func shortHash(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
+// Reset 清掉编译缓存（内存里的；磁盘上的只存编译成功的，按内容认，留着）并重新构建：顶栏的「刷新页面」先调它，
+// 缓存或监视出了岔子时用户点一下就能恢复，不用重启 App。
+func (r *Renderer) Reset(ctx context.Context) {
+	r.modules.mu.Lock()
+	r.modules.mem = nil
+	r.modules.mu.Unlock()
+	r.mu.Lock()
+	if r.cur != nil {
+		r.cur.sig = "" // 下面 ensure 时一定重建
+	}
+	r.mu.Unlock()
+	r.ensure(ctx)
+}
+
 // ensure 返回当前源码的构建结果，源码没变就用上一次的。建了新的就把变化推给打开着的页面。
 func (r *Renderer) ensure(ctx context.Context) *build {
 	r.mu.Lock()

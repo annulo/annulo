@@ -42,6 +42,14 @@ let zh = (process.env.LANG || '').startsWith('zh')
 const L = (cn, en) => zh ? cn : en
 let window, helper, tray, updater, quitting = false, quitPending = false, generation = 0, phase = 'loading', helperLog = '', diagnostics = '', target = panelURL
 
+// 设置里选的界面语言：zh / en；没选（跟随系统）、读不到返回空
+function configLanguage() {
+  try {
+    const lang = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')).language
+    return lang === 'zh' || lang === 'en' ? lang : ''
+  } catch { return '' }
+}
+
 function log(message) {
   const file = path.join(logDir, 'electron.log')
   try {
@@ -141,30 +149,53 @@ function showWindow() {
 }
 
 function openExternal(value) { const url = externalURL(value); if (url) void shell.openExternal(url) }
+const webPreferences = () => ({ preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true })
 function buildWindow() {
-  window = new BrowserWindow({ title: 'Annulo', icon: path.join(__dirname, 'icons', 'Annulo.png'), width: 1440, height: 900, minWidth: 900, minHeight: 600, backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#ffffff', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } })
+  window = new BrowserWindow({ title: 'Annulo', icon: path.join(__dirname, 'icons', 'Annulo.png'), width: 1440, height: 900, minWidth: 900, minHeight: 600, backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#ffffff', webPreferences: webPreferences() })
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); app.dock?.hide() } })
-  window.on('app-command', (_event, command) => {
-    const direction = command === 'browser-backward' ? -1 : command === 'browser-forward' ? 1 : 0
-    if (direction && phase === 'app') {
-      void window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('shuttle:backend-history', {detail: ${direction}}))`).catch(error => log(`Backend history: ${error.message}`))
-    }
-  })
-  window.webContents.on('will-navigate', (event, url) => { if (!isInternalURL(url, origin)) { event.preventDefault(); openExternal(url) } })
-  // ⌘ 点击后台里的链接、target=_blank 打开的本机地址：交给界面开一个运营后台标签页；站外地址用系统浏览器
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isInternalURL(url, origin)) { if (phase === 'app') void window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('shuttle:open-tab', {detail: ${JSON.stringify(url)}}))`).catch(error => log(`Open tab: ${error.message}`)) }
-    else openExternal(url)
-    return { action: 'deny' }
-  })
-  window.webContents.on('will-attach-webview', event => event.preventDefault())
+  wireWindow(window, () => phase === 'app')
   window.webContents.on('render-process-gone', (_event, details) => fail(L('网页进程已退出', 'The renderer process exited'), JSON.stringify(details)))
   window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => { if (isMainFrame && code !== -3 && phase === 'app') fail(L('界面加载失败', 'Interface load failed'), `${code} ${description}\n${url}`) })
-  window.webContents.on('console-message', (_event, details, oldMessage, line, source) => {
+  window.webContents.session.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'clipboard-sanitized-write' && isInternalURL(contents.getURL(), origin)))
+}
+
+// 每个项目一个源（<项目>.localhost，见服务端 view.go）：项目菜单里「在新窗口打开」另开一个窗口看另一个项目，
+// 各窗口的对话互不打断。主窗口管启动、出错页、更新；这些窗口只显示界面，关了就关了。
+const projectWindows = new Set()
+function openProjectWindow(url) {
+  const win = new BrowserWindow({ title: 'Annulo', icon: path.join(__dirname, 'icons', 'Annulo.png'), width: 1280, height: 840, minWidth: 900, minHeight: 600, backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#ffffff', webPreferences: webPreferences() })
+  projectWindows.add(win)
+  win.on('closed', () => projectWindows.delete(win))
+  wireWindow(win, () => true)
+  win.webContents.on('did-fail-load', (_event, code, description, failedURL, isMainFrame) => { if (isMainFrame && code !== -3) log(`Project window load failed: ${code} ${description} ${failedURL}`) })
+  void win.loadURL(url).catch(error => log(`Project window: ${error.message}`))
+  return win
+}
+
+// 窗口共用的导航规则：站外地址用系统浏览器；⌘ 点击后台里的链接、target=_blank 打开的本机地址交给界面开一个后台标签页；
+// 打开的是另一个项目的界面（别的 <项目>.localhost 的 /_shuttle/）就开一个新窗口
+function wireWindow(win, ready) {
+  win.on('app-command', (_event, command) => {
+    const direction = command === 'browser-backward' ? -1 : command === 'browser-forward' ? 1 : 0
+    if (direction && ready()) {
+      void win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('shuttle:backend-history', {detail: ${direction}}))`).catch(error => log(`Backend history: ${error.message}`))
+    }
+  })
+  win.webContents.on('will-navigate', (event, url) => { if (!isInternalURL(url, origin)) { event.preventDefault(); openExternal(url) } })
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isInternalURL(url, origin)) {
+      let other = false
+      try { other = new URL(url).origin !== new URL(win.webContents.getURL()).origin && new URL(url).pathname.startsWith('/_shuttle') } catch {}
+      if (other) openProjectWindow(url)
+      else if (ready()) void win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('shuttle:open-tab', {detail: ${JSON.stringify(url)}}))`).catch(error => log(`Open tab: ${error.message}`))
+    } else openExternal(url)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-attach-webview', event => event.preventDefault())
+  win.webContents.on('console-message', (_event, details, oldMessage, line, source) => {
     if (typeof details === 'object') { if (details.level === 'error' || details.level === 3) log(`JavaScript: ${details.message} (${details.sourceId}:${details.lineNumber})`) }
     else if (details === 3) log(`JavaScript: ${oldMessage} (${source}:${line})`)
   })
-  window.webContents.session.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'clipboard-sanitized-write' && isInternalURL(contents.getURL(), origin)))
 }
 
 async function stopHelper() {
@@ -183,7 +214,7 @@ async function stopHelper() {
 async function confirmStopChats(detail, action) {
   if (!helper) return true
   const current = await status()
-  const count = current?.agent?.running?.length || 0
+  const count = (current?.agent?.running_all ?? current?.agent?.running)?.length || 0 // running_all：所有打开着的项目
   if (count === 0) return true
   const answer = await dialog.showMessageBox(window, { type: 'warning', message: L(`还有 ${count} 段对话在运行`, `${count} chats are still running`), detail, buttons: [L('取消', 'Cancel'), action], defaultId: 0, cancelId: 0 })
   return answer.response !== 0
@@ -243,8 +274,8 @@ function sendUpdateState() {
 async function closeTabOrWindow() {
   const focused = BrowserWindow.getFocusedWindow()
   if (!focused) return
-  if (focused === window && phase === 'app') {
-    const handled = await window.webContents.executeJavaScript(`!window.dispatchEvent(new CustomEvent('shuttle:close-tab', {cancelable: true}))`).catch(() => false)
+  if ((focused === window && phase === 'app') || projectWindows.has(focused)) {
+    const handled = await focused.webContents.executeJavaScript(`!window.dispatchEvent(new CustomEvent('shuttle:close-tab', {cancelable: true}))`).catch(() => false)
     if (handled) return
   }
   focused.close()
@@ -252,6 +283,12 @@ async function closeTabOrWindow() {
 
 // ⌘R：只刷新左侧运营后台当前标签的 iframe（界面 preventDefault 表示刷了）；还没进界面、或界面里没有后台（新建项目页）就整个重新加载
 async function reloadSite() {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && projectWindows.has(focused)) { // 项目窗口：刷它自己的后台，界面里没后台就整个重新加载
+    const handled = await focused.webContents.executeJavaScript(`!window.dispatchEvent(new CustomEvent('shuttle:reload-site', {cancelable: true}))`).catch(() => false)
+    if (!handled) focused.webContents.reload()
+    return
+  }
   if (phase === 'app') {
     const handled = await window.webContents.executeJavaScript(`!window.dispatchEvent(new CustomEvent('shuttle:reload-site', {cancelable: true}))`).catch(() => false)
     if (handled) return
@@ -300,7 +337,9 @@ if (!app.requestSingleInstanceLock()) app.exit()
 else {
   app.on('second-instance', (_event, argv) => { const page = deepLinkURL(argv.find(value => value.startsWith('annulo:') || value.startsWith('shuttle:')) || '', panelURL); if (page) target = page; showWindow(); if (page) void startup() })
   app.whenReady().then(() => {
-    zh = app.getPreferredSystemLanguages()[0]?.startsWith('zh') || zh
+    // 启动页、托盘、对话框的语言：设置里选了中文或英文就用它（服务写在 <数据目录>/config.json 的 language），选的跟随系统才看系统语言
+    const chosen = configLanguage()
+    zh = chosen ? chosen === 'zh' : app.getPreferredSystemLanguages()[0]?.startsWith('zh') || zh
     if (process.platform === 'win32') app.setAppUserModelId('com.creght.shuttle')
     const page = deepLinkURL(process.argv.find(value => value.startsWith('annulo:') || value.startsWith('shuttle:')) || '', panelURL)
     if (page) target = page

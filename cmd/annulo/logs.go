@@ -18,7 +18,7 @@ func logsCmd() *cobra.Command {
 			return err
 		}
 		q := url.Values{"fn": {fn}, "id": {id}, "limit": {fmt.Sprint(limit)}}
-		resp, err := shuttleReq("GET", fmt.Sprintf("http://%s/_shuttle/api/local/logs?%s", cfg.Addr(), q.Encode()), nil)
+		resp, err := shuttleReq("GET", fmt.Sprintf("http://%s/_shuttle/api/local/logs?%s", cfg.LocalAddr(), q.Encode()), nil)
 		if err != nil {
 			return err
 		}

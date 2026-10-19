@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, type DynamicToolUIPart, type FileUIPart, type UIMessage } from 'ai'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { ChatMedia, imageGroup, LocalFileActions, localMediaPath, MediaGrid, rehypeImageGroups, urlTransform } from '@/components/ChatMedia'
 import {
   ArrowUp,
   ArrowUpRight,
@@ -30,9 +31,9 @@ import { Button } from '@/components/ui/button'
 import UserInputCard from '@/components/UserInputCard'
 import Feedback from '@/components/Feedback'
 import ChatChart from '@/components/ChatChart'
-import { ZoomImage } from '@/components/ui/lightbox'
 import { ACCEPT, AttachmentStrip, MessageImages, useAttachments } from '@/components/Attachments'
 import { ModelMenu } from '@/components/ModelMenu'
+import { RefStrip, RefText } from '@/components/RefChips'
 import { Tip } from '@/components/ui/tip'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
@@ -46,6 +47,10 @@ type Part = Msg['parts'][number]
 type LLM = Status['llm']
 // 助手忙时发的消息。steered：已经交给服务端插进这一轮，等当前这步完成后送达模型
 type Queued = { id: string; text: string; files: FileUIPart[]; steered?: boolean }
+// 助手这一轮在等的后台任务（Claude Code 的后台命令、后台子 agent）：服务端推 data-background，startedAt 是开始的时间
+type BgTask = { id: string; description: string; type: string; startedAt: number }
+// 连接断了（手机切到后台、换网络、远程隧道断开）：fetch 抛 TypeError（Chrome「network error」「Failed to fetch」，Safari「Load failed」）
+const isDisconnect = (e?: Error) => e instanceof TypeError
 
 // 当前对话按项目记：切回来还是上次那段
 const currentKey = (ws: string) => (ws ? `shuttle.chat.${ws}` : 'shuttle.chat')
@@ -71,8 +76,8 @@ function store(key: string, v?: string) {
  * 右侧 AI 面板，样式照搬 talizen 编辑器的聊天面板（RightPanel）。
  * 外壳管当前对话、历史和宽度；每段对话是一个 <ChatSession>，换对话就换 key 重新挂载。
  */
-export default function ChatPanel(props: { workspace: string; onTurnDone: (m: Msg) => void; llm?: LLM; onOpenSettings: () => void; onLLMChanged: () => void; assistant?: Assistant }) {
-  const [chat, setChat] = useState<{ id: string; initial: Msg[]; feedback?: Record<string, 'up' | 'down'> } | null>(null)
+export default function ChatPanel(props: { workspace: string; llm?: LLM; onOpenSettings: () => void; onLLMChanged: () => void; assistant?: Assistant }) {
+  const [chat, setChat] = useState<{ id: string; initial: Msg[]; feedback?: Record<string, 'up' | 'down'>; compose?: string } | null>(null)
   // 当前对话的标题：第一句话发出后模型起一个短名字（随这一轮推过来），用户也可以点标题改
   const [title, setTitle] = useState('')
   // 历史弹层用 fixed 定位浮在运营后台 iframe 上面，面板拖窄了也不会被裁；锚点是历史按钮
@@ -164,11 +169,19 @@ export default function ChatPanel(props: { workspace: string; onTurnDone: (m: Ms
       if (e.origin !== location.origin || msgType(e.data) !== 'shuttle:open-chat' || typeof e.data.chat_id !== 'string') return
       openExternal(e.data.chat_id)
     }
+    // 页面 postMessage({ type: 'shuttle:compose', text })：新开一段空对话，把 text（比如一个引用）填进输入框，等用户自己写完再发
+    const onCompose = (e: MessageEvent) => {
+      if (e.origin !== location.origin || msgType(e.data) !== 'shuttle:compose' || typeof e.data.text !== 'string') return
+      setChat({ id: newId(), initial: [], compose: e.data.text })
+      setTitle('')
+    }
     window.addEventListener('shuttle:open-chat', on)
     window.addEventListener('message', onMsg)
+    window.addEventListener('message', onCompose)
     return () => {
       window.removeEventListener('shuttle:open-chat', on)
       window.removeEventListener('message', onMsg)
+      window.removeEventListener('message', onCompose)
     }
   }, [])
   const fresh = () => {
@@ -285,7 +298,7 @@ export default function ChatPanel(props: { workspace: string; onTurnDone: (m: Ms
           }}
         />
       )}
-      {chat && <ChatSession key={chat.id} chatId={chat.id} initial={chat.initial} initialFeedback={chat.feedback} onTitle={setTitle} onContext={setCtx} {...props} />}
+      {chat && <ChatSession key={chat.id} chatId={chat.id} initial={chat.initial} initialFeedback={chat.feedback} initialInput={chat.compose} running={statuses[chat.id] === 'running'} onTitle={setTitle} onContext={setCtx} {...props} />}
     </aside>
   )
 }
@@ -416,7 +429,8 @@ function ChatSession({
   chatId,
   initial,
   initialFeedback,
-  onTurnDone,
+  initialInput,
+  running,
   llm,
   onOpenSettings,
   onLLMChanged,
@@ -428,9 +442,11 @@ function ChatSession({
   chatId: string
   initial: Msg[]
   initialFeedback?: Record<string, 'up' | 'down'>
+  initialInput?: string
+  /** 服务端这段对话正在跑（外壳轮询 agent/running）：可能是别的设备、定时任务发起的 */
+  running?: boolean
   onTitle: (title: string) => void
   onContext: (ctx: { used: number; total: number } | null) => void
-  onTurnDone: (m: Msg) => void
   llm?: LLM
   onOpenSettings: () => void
   onLLMChanged: () => void
@@ -444,35 +460,50 @@ function ChatSession({
         prepareSendMessagesRequest: ({ id, messages }) => ({
           body: { id, message: messages[messages.length - 1] },
         }),
+        // 远程访问时电脑没响应（502）或不在线（503）：当断线处理、自动重连。对话接口自己不回这几个状态码，不看 body（隧道以前回的是网页）
+        fetch: async (input, init) => {
+          const res = await fetch(input, init)
+          if ([502, 503, 504].includes(res.status)) {
+            throw new TypeError('computer not responding')
+          }
+          return res
+        },
       }),
     [],
   )
-  const { messages, sendMessage, status, stop, error } = useChat<Msg>({
+  const [bg, setBg] = useState<BgTask[]>([])
+  const { messages, setMessages, sendMessage, resumeStream, status, stop, error } = useChat<Msg>({
     id: chatId,
     messages: initial,
     transport,
+    // 输出很密时合并成每 50ms 刷一次界面：长对话里每来一个字都整体重渲染会卡
+    throttle: 50,
     // agent 在服务端独立运行，刷新页面不会停；挂载时接上正在进行的那一轮
     resume: true,
-    onFinish: ({ message }) => onTurnDone(message),
     // 服务端给新对话起好名字时推一个 data-title（transient，不进消息）
     onData: (part) => {
       const t = part.type === 'data-title' ? (part.data as { title?: string })?.title : undefined
       if (t) onTitle(t)
+      if (part.type === 'data-background') setBg((part.data as { tasks?: BgTask[] })?.tasks ?? [])
     },
   })
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(initialInput ?? '')
   const [stuck, setStuck] = useState(true)
   // 用户给回复点的赞 / 踩：先改界面（气泡马上出来），再告诉服务端（它记进对话文件、整理摘要发给 creght）；失败不打扰用户
   const [feedback, setFeedback] = useState<Record<string, 'up' | 'down'>>(initialFeedback ?? {})
-  const rate = (id: string, r: 'up' | 'down' | 'none') => {
-    setFeedback((f) => {
-      const n = { ...f }
-      if (r === 'none') delete n[id]
-      else n[id] = r
-      return n
-    })
-    post(`agent/chats/${chatId}/feedback`, { message_id: id, rating: r }).catch(() => {})
-  }
+  // 稳定的引用：历史消息（AssistantMessage）是 memo 的，回调每次都是新函数的话每来一个字整段历史都重渲染
+  const rate = useCallback(
+    (id: string, r: 'up' | 'down' | 'none') => {
+      setFeedback((f) => {
+        const n = { ...f }
+        if (r === 'none') delete n[id]
+        else n[id] = r
+        return n
+      })
+      post(`agent/chats/${chatId}/feedback`, { message_id: id, rating: r }).catch(() => {})
+    },
+    [chatId],
+  )
   const scroller = useRef<HTMLDivElement>(null)
   const lastTop = useRef(0)
   const box = useRef<HTMLTextAreaElement>(null)
@@ -484,6 +515,96 @@ function ChatSession({
   // 助手忙的时候发的消息先排队，这一轮结束后依次发出（和 Claude Code 一样）
   const [queue, setQueue] = useState<Queued[]>([])
   const busy = status === 'submitted' || status === 'streaming'
+  useEffect(() => {
+    if (!busy) setBg([])
+  }, [busy])
+
+  // 断线重连：助手在服务端照常跑，重新读一遍历史（这一轮之前的），再接上这一轮（服务端从头回放）；这一轮已经跑完的，历史里就有回答
+  const lost = status === 'error' && isDisconnect(error)
+  // resuming：重连的这段时间状态会短暂回到 ready，排队的消息不能趁机当新消息发出去
+  const reconnecting = useRef(false)
+  const [resuming, setResuming] = useState(false)
+  const [retryAt, setRetryAt] = useState(0)
+  const reconnect = async () => {
+    if (reconnecting.current) return
+    reconnecting.current = true
+    setResuming(true)
+    try {
+      const c = await getJSON<ChatDetail>(`agent/chats/${chatId}`)
+      setMessages(normalizeChatMessages<Msg>(c.messages))
+      setBg([])
+      await resumeStream()
+    } catch {
+      // 还连不上（读历史失败）：下面按退避再试
+    } finally {
+      reconnecting.current = false
+      setResuming(false)
+      setRetryAt((n) => n + 1)
+    }
+  }
+  const reconnectRef = useRef(reconnect)
+  reconnectRef.current = reconnect
+  // 别的设备（手机、另一台电脑）或定时任务在这段对话里开了一轮，这台设备开着这段对话却没接着它：重读历史、接上这一轮，
+  // 和发起的那台一样实时看到。每一轮只接一次：这台自己发的（跑的时候 busy）不接；跑完到撤掉这一轮之间（在提交项目）
+  // 轮询还说在跑，续传拿 204，不能反复重连。打开对话时就在跑的那一轮 useChat 的 resume 已经会接，这里不再接一次
+  const attached = useRef(!!running)
+  useEffect(() => {
+    if (!running) {
+      attached.current = false
+      return
+    }
+    if (busy || lost || resuming) {
+      attached.current = true
+      return
+    }
+    if (attached.current) return
+    attached.current = true
+    reconnectRef.current()
+  }, [running, busy, lost, resuming])
+  // 断了就自动重试：1、2、4…最多 15 秒一次；页面在后台不试，回到前台、网络恢复时马上试
+  const tries = useRef(0)
+  useEffect(() => {
+    if (!lost) {
+      tries.current = 0
+      return
+    }
+    if (document.visibilityState !== 'visible') return
+    const delay = Math.min(1000 * 2 ** tries.current, 15000)
+    tries.current++
+    const timer = setTimeout(() => reconnectRef.current(), delay)
+    return () => clearTimeout(timer)
+  }, [lost, retryAt])
+  useEffect(() => {
+    // 手机切到后台再回来：连接可能已经悄悄断了、还显示在跑，离开超过几秒就主动重新接上
+    let hiddenAt = 0
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now()
+        return
+      }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0
+      hiddenAt = 0
+      if (statusRef.current === 'error' && isDisconnect(errorRef.current)) reconnectRef.current()
+      else if (away > 3000 && (statusRef.current === 'streaming' || statusRef.current === 'submitted') && !reconnecting.current) {
+        // 先挂上 resuming 再断开旧连接（stop 只断浏览器这头，不停助手）
+        reconnectRef.current()
+        stop()
+      }
+    }
+    const onOnline = () => {
+      if (statusRef.current === 'error' && isDisconnect(errorRef.current)) reconnectRef.current()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('online', onOnline)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [])
+  const statusRef = useRef(status)
+  statusRef.current = status
+  const errorRef = useRef(error)
+  errorRef.current = error
 
   // 贴底时跟着滚；用户往上翻了就不打扰
   useEffect(() => {
@@ -494,6 +615,30 @@ function ChatSession({
     // 只认真到底了（被内容变短顶到底）；离底几像素是用户刚往上滚，不能又贴回去
     else if (el.scrollHeight - el.clientHeight - el.scrollTop < 1) setStuck(true)
   }, [messages, status, stuck])
+  // 打开对话（刷新、进页面自动打开上一段、手动切换）时内容还会变高：图片视频加载出来、本机媒体换到地址、markdown 渲染完；
+  // 手机上助手那页一开始是隐藏的（高度 0），切过来才有高度。贴底时内容或容器的大小一变就再滚到底
+  const stuckRef = useRef(stuck)
+  stuckRef.current = stuck
+  const empty = messages.length === 0
+  useEffect(() => {
+    const el = scroller.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const pin = () => {
+      if (stuckRef.current) el.scrollTop = el.scrollHeight
+    }
+    const ro = new ResizeObserver(pin)
+    ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => ro.disconnect()
+  }, [empty])
+
+  // 页面填进来的话（shuttle:compose）：光标放到最后，用户接着写
+  useEffect(() => {
+    const el = box.current
+    if (!initialInput || !el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
 
   // 输入框自动长高，最多 12rem
   useEffect(() => {
@@ -565,12 +710,12 @@ function ChatSession({
   // 一轮正常结束：没来得及插进去的（模型在写最后一段时发的）当普通消息依次发；出错了先停住，让用户决定要不要接着发
   useEffect(() => {
     const rest = queue.filter((q) => !delivered.has(q.id))
-    if (status !== 'ready' || !rest.length) return
+    if (status !== 'ready' || resuming || !rest.length) return
     const [next, ...others] = rest
     setQueue(others.map((q) => ({ ...q, steered: false })))
     setStuck(true)
     sendMessage(next.files.length ? { text: next.text, files: next.files } : { text: next.text })
-  }, [status, queue, delivered])
+  }, [status, queue, delivered, resuming])
 
   // 排队的消息拿回输入框（编辑，或者停止时全部退回）
   const unqueue = (items: Queued[]) => {
@@ -585,6 +730,8 @@ function ChatSession({
   // 运营后台页面上的「交给助手」按钮：postMessage 过来一句话，空闲就直接发，忙就先填进输入框
   const sendRef = useRef(send)
   sendRef.current = send
+  // 问卷卡片的回答走 send；包一层稳定的引用，理由同 rate
+  const answer = useCallback((text: string) => sendRef.current(text), [])
   const busyRef = useRef(busy)
   busyRef.current = busy
   useEffect(() => {
@@ -595,6 +742,26 @@ function ChatSession({
     window.addEventListener('message', f)
     return () => window.removeEventListener('message', f)
   }, [])
+
+  // 立即发送一条排队的消息：打断这一轮（本机 Claude Code / Codex 直接结束进程），这条排到最前面。
+  // 不调 stop()：等服务端收完这一轮（finish）状态回到 ready，上面的 effect 再把它发出去；先断开的话服务端还在收尾，会拿到 409
+  const [interrupting, setInterrupting] = useState(false)
+  useEffect(() => {
+    if (!busy) setInterrupting(false)
+  }, [busy])
+  const sendNow = (item: Queued) => {
+    const others = queue.filter((x) => x.id !== item.id)
+    if (!busy) {
+      setQueue(others)
+      setStuck(true)
+      sendMessage(item.files.length ? { text: item.text, files: item.files } : { text: item.text })
+      return
+    }
+    // 打断后服务端会清掉还没送达的插话，剩下的都按普通消息排队
+    setQueue([item, ...others].map((q) => ({ ...q, steered: false })))
+    setInterrupting(true)
+    post('agent/abort', { chat_id: chatId }).catch(() => setInterrupting(false))
+  }
 
   const onStop = async () => {
     // 停止时排队的消息退回输入框，不自动发出去
@@ -632,7 +799,7 @@ function ChatSession({
                   <div className="max-w-[90%] rounded-lg bg-muted px-2 py-2 text-sm whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]">
                     <MessageImages parts={m.parts.filter((p): p is FileUIPart => p.type === 'file')} />
                     {m.parts.some((p) => p.type === 'text' && p.text) && (
-                      <div className={cn('px-2', m.parts.some((p) => p.type === 'file') && 'pt-2')}>{m.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')}</div>
+                      <div className={cn('px-2', m.parts.some((p) => p.type === 'file') && 'pt-2')}><RefText text={m.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')} /></div>
                     )}
                   </div>
                 </div>
@@ -641,11 +808,12 @@ function ChatSession({
                   key={m.id}
                   m={m}
                   live={busy && i === messages.length - 1}
-                  onAnswer={i === messages.length - 1 && !busy ? send : undefined}
+                  bg={busy && i === messages.length - 1 ? bg : undefined}
+                  onAnswer={i === messages.length - 1 && !busy ? answer : undefined}
                   // 紧跟着的用户消息：问卷没填、直接在对话里回复的，问卷卡片按它给选中的选项打勾
                   reply={messages[i + 1]?.role === 'user' ? messages[i + 1].parts.map((p) => (p.type === 'text' ? p.text : '')).join('') : undefined}
                   rating={feedback[m.id]}
-                  onRate={(r) => rate(m.id, r)}
+                  onRate={rate}
                 />
               ),
             )}
@@ -654,7 +822,17 @@ function ChatSession({
                 <Loader className="size-3.5 animate-spin text-muted-foreground" />
               </div>
             )}
-            {error && <div className="w-full rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs break-all text-destructive">{error.message}</div>}
+            {lost || (resuming && !busy) ? (
+              <div className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                <Loader className="size-3.5 shrink-0 animate-spin" />
+                <span className="min-w-0 flex-1">{t('连接断了，正在重新连接…助手不受影响，还在接着做')}</span>
+                <button type="button" onClick={() => reconnect()} className="shrink-0 font-semibold text-primary-text hover:underline">
+                  {t('马上重连')}
+                </button>
+              </div>
+            ) : (
+              error && <div className="w-full rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs break-all text-destructive">{error.message}</div>
+            )}
           </div>
         )}
         {busy && !stuck && <div className="pointer-events-none sticky bottom-0 h-1 animate-pulse rounded-full bg-primary/90" />}
@@ -662,7 +840,7 @@ function ChatSession({
 
       <div className="shrink-0">
         {/* 排队的消息、待发的图片放在输入框上面 */}
-        <div className="mb-2 grid gap-2 empty:hidden">
+        <div className="mb-2 grid grid-cols-1 gap-2 empty:hidden">
           <QueueList
             items={queue}
             paused={status === 'error'}
@@ -673,9 +851,12 @@ function ChatSession({
               sendMessage(next.files.length ? { text: next.text, files: next.files } : { text: next.text })
             }}
             onEdit={(q) => unqueue([q])}
+            onSendNow={sendNow}
+            interrupting={interrupting}
             onRemove={(id) => setQueue((xs) => xs.filter((x) => x.id !== id))}
           />
           <AttachmentStrip items={atts.items} onRemove={atts.remove} />
+          <RefStrip text={input} />
         </div>
         <form
           onSubmit={(e) => {
@@ -697,7 +878,7 @@ function ChatSession({
             atts.add(e.dataTransfer.files)
             box.current?.focus()
           }}
-          className={cn('relative grid gap-2 rounded-xl', dragging && 'ring-2 ring-primary/60 ring-offset-4 ring-offset-background')}
+          className={cn('relative grid grid-cols-1 gap-2 rounded-xl', dragging && 'ring-2 ring-primary/60 ring-offset-4 ring-offset-background')}
         >
           {dragging && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/80 text-sm font-semibold text-foreground">{t('松开鼠标，把图片加进消息')}</div>
@@ -969,9 +1150,35 @@ function blocksOf(parts: Part[]): Block[] {
   return out
 }
 
-// 回答里的 ```chart 代码块画成图（格式见 ChatChart），其他代码块照常；图片可以点开。live 时没写完的块显示「正在画图」
+/** 回答里指向项目页面的链接（/?view=…）：返回页面地址；外部链接、本机文件（/_annulo/uploaded/…）返回 null，照常当链接 */
+function pageLink(href: unknown): string | null {
+  if (typeof href !== 'string' || !href.startsWith('/') || href.startsWith('//')) return null
+  if (/^\/_(annulo|shuttle)\//.test(href)) return null
+  return href
+}
+
+// 回答里的 ```chart 代码块画成图（格式见 ChatChart），其他代码块照常；图片可以点开。live 时没写完的块显示「正在画图」。
+// 指向项目页面的链接画成按钮：点了左侧当前标签跳过去（App 收 shuttle:open-path），⌘ / Ctrl 点在新标签打开；不整窗跳走
 function mdComponents(live: boolean): Components {
   return {
+    a({ href, children, node: _node, ...rest }) {
+      // 指向本机图片、视频的链接：显示文字和打开按钮，不当页面链接
+      const file = localMediaPath(href)
+      if (file) return <span className="inline-flex max-w-full items-center gap-1 align-middle"><span>{children}</span><LocalFileActions path={file} /></span>
+      const path = pageLink(href)
+      if (!path) return <a href={href} {...rest}>{children}</a>
+      return (
+        <button
+          type="button"
+          title={t('在左侧打开（{mod} 点击在新标签打开）', { mod: /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl' })}
+          onClick={(e) => window.dispatchEvent(new CustomEvent('shuttle:open-path', { detail: { path, newTab: e.metaKey || e.ctrlKey } }))}
+          className="mx-0.5 inline-flex h-6 max-w-full cursor-pointer items-center gap-1 rounded-full border border-primary/25 bg-primary/10 pr-1.5 pl-2.5 align-middle text-xs font-medium text-primary-text transition-colors hover:bg-primary/15"
+        >
+          <span className="min-w-0 truncate">{children}</span>
+          <ArrowUpRight className="size-3.5 shrink-0" />
+        </button>
+      )
+    },
     pre({ node, children, ...rest }) {
       const code = node?.children[0]
       const cls = code?.type === 'element' ? code.properties.className : undefined
@@ -981,30 +1188,50 @@ function mdComponents(live: boolean): Components {
       }
       return <pre {...rest}>{children}</pre>
     },
-    // 回答里的图片点开全屏看
+    // 连着的几张图排成网格（ChatMedia 的 rehypeImageGroups 先把它们合成一段）
+    p({ node, children, ...rest }) {
+      const imgs = imageGroup(node)
+      if (imgs) return <MediaGrid items={imgs} />
+      return <p {...rest}>{children}</p>
+    },
+    // 回答里的图片点开全屏看；本机的图片、视频经服务端显示，带打开按钮（ChatMedia）
     img({ src, alt }) {
       if (typeof src !== 'string' || !src) return null
-      return <ZoomImage src={src} alt={alt || t('图片')} wrapClassName="my-1 inline-block max-w-full" className="max-h-72 max-w-full rounded-md border border-border/60" />
+      return <ChatMedia src={src} alt={alt} />
     },
   }
 }
 const liveMd = mdComponents(true)
 const doneMd = mdComponents(false)
+const remarkPlugins = [remarkGfm]
+const rehypePlugins = [rehypeImageGroups]
+
+/** 一段 markdown：文字没变就不重新解析（正在输出的那条里，前面写完的段落也不用每个字都重来） */
+const MdText = memo(function MdText({ text, live }: { text: string; live: boolean }) {
+  return (
+    <Markdown remarkPlugins={remarkPlugins} components={live ? liveMd : doneMd} rehypePlugins={rehypePlugins} urlTransform={urlTransform}>
+      {text}
+    </Markdown>
+  )
+})
 
 // onAnswer：这是对话的最后一条、助手没在跑时才有，上面的问卷可以作答（答案作为新消息发出）
-function AssistantMessage({ m, live, onAnswer, reply, rating, onRate }: { m: Msg; live: boolean; onAnswer?: (text: string) => void; reply?: string; rating?: 'up' | 'down'; onRate: (r: 'up' | 'down' | 'none') => void }) {
+// memo：长对话里每来一个字，只有正在输出的那条重渲染，历史消息（m 的引用不变）跳过，markdown 不重新解析
+const AssistantMessage = memo(function AssistantMessage({ m, live, bg, onAnswer, reply, rating, onRate }: { m: Msg; live: boolean; bg?: BgTask[]; onAnswer?: (text: string) => void; reply?: string; rating?: 'up' | 'down'; onRate: (id: string, r: 'up' | 'down' | 'none') => void }) {
   const blocks = blocksOf(m.parts)
   // 跑完、有文字回复的才能评价
   const rateable = !live && blocks.some((b) => b.kind === 'text' && b.text.trim())
+  // 最后一组步骤的工具还在跑：它的标题行已经在转圈，底部只显示计时
+  const tail = blocks[blocks.length - 1]
+  const lastTool = tail?.kind === 'steps' ? tail.parts.filter((p): p is DynamicToolUIPart => p.type === 'dynamic-tool').at(-1) : undefined
+  const toolRunning = live && !!lastTool && lastTool.state !== 'output-available' && lastTool.state !== 'output-error'
   return (
     <div className="group/msg flex justify-start">
       <div className="w-full space-y-1 py-2 text-sm">
         {blocks.map((b, i) =>
           b.kind === 'text' ? (
             <div key={i} className="md px-2 py-1">
-              <Markdown remarkPlugins={[remarkGfm]} components={live ? liveMd : doneMd}>
-                {b.text}
-              </Markdown>
+              <MdText text={b.text} live={live} />
             </div>
           ) : b.kind === 'ask' ? (
             <UserInputCard key={i} part={b.part} onAnswer={onAnswer} reply={reply} />
@@ -1021,13 +1248,13 @@ function AssistantMessage({ m, live, onAnswer, reply, rating, onRate }: { m: Msg
           ),
         )}
         <div className="flex items-center justify-between gap-2">
-          <MessageFooter meta={m.metadata} live={live} />
-          {rateable && <Feedback rating={rating} onRate={onRate} />}
+          <MessageFooter meta={m.metadata} live={live} spin={!toolRunning} bg={bg} />
+          {rateable && <Feedback rating={rating} onRate={(r) => onRate(m.id, r)} />}
         </div>
       </div>
     </div>
   )
-}
+})
 
 const TOOL_TITLES: Record<string, string> = {
   bash: '执行命令',
@@ -1049,6 +1276,18 @@ function toolTitle(name: string) {
   return TOOL_TITLES[name] ? t(TOOL_TITLES[name]) : name
 }
 
+// toolDesc：工具调用自带的一句说明（bash 的 description，Claude Code 的 Bash 也有），有就代替参数显示，展开才看命令
+function toolDesc(input: unknown) {
+  const d = (input as Record<string, unknown> | undefined)?.description
+  return typeof d === 'string' ? d.trim() : ''
+}
+
+function ToolArg({ input, className }: { input: unknown; className?: string }) {
+  const desc = toolDesc(input)
+  if (desc) return <span className={cn('min-w-0 opacity-70', className)}>{desc}</span>
+  return <span className={cn('min-w-0 font-mono text-[11px] opacity-50', className)}>{toolArg(input)}</span>
+}
+
 function toolArg(input: unknown) {
   const a = (input ?? {}) as Record<string, unknown>
   const v = a.command ?? a.path ?? a.file_path ?? a.pattern ?? a.query ?? a.url ?? a.id ?? a.channel_id ?? a.table
@@ -1060,6 +1299,13 @@ function StepGroup({ parts, live }: { parts: Part[]; live: boolean }) {
   const tools = parts.filter((p): p is DynamicToolUIPart => p.type === 'dynamic-tool')
   const last = tools[tools.length - 1]
   const thinking = !last && parts.some((p) => p.type === 'reasoning' && p.state === 'streaming')
+  // 只有一次工具调用、没有思考过程：不用组，直接显示这一行（不然标题和展开后的那一行一模一样）
+  if (tools.length === 1 && !parts.some((p) => p.type === 'reasoning'))
+    return (
+      <div className="w-full py-1 pr-2 pl-2">
+        <ToolCallRow part={last} live={live} />
+      </div>
+    )
   return (
     <div className="w-full py-1 pr-2 pl-2">
       {/* 展开时标题行粘在对话区顶部：往下翻长长的工具列表时，随时能点它收起 */}
@@ -1073,7 +1319,7 @@ function StepGroup({ parts, live }: { parts: Part[]; live: boolean }) {
       >
         {last ? <ToolStatusIcon part={last} live={live} /> : <Brain className="size-4 p-0.5 opacity-70" />}
         <span className="shrink-0 font-medium opacity-90">{last ? toolTitle(last.toolName) : thinking ? t('思考中…') : t('思考过程')}</span>
-        {last && <span className="min-w-0 truncate font-mono text-[11px] opacity-50">{toolArg(last.input)}</span>}
+        {last && <ToolArg input={last.input} className="truncate" />}
         <span className="ml-auto flex shrink-0 items-center gap-1 opacity-60">
           {tools.length > 1 && (
             <>
@@ -1130,7 +1376,7 @@ function ToolCallRow({ part, live }: { part: DynamicToolUIPart; live: boolean })
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-start gap-1.5 text-left text-xs">
         <ToolStatusIcon part={part} live={live} />
         <span className="shrink-0 font-medium opacity-90">{toolTitle(part.toolName)}</span>
-        <span className="min-w-0 font-mono text-[11px] break-all opacity-50">{toolArg(part.input)}</span>
+        <ToolArg input={part.input} className="break-all" />
       </button>
       {open && (
         <pre className="scroll-thin ml-[22px] max-h-60 overflow-auto rounded-lg border border-border/30 bg-card p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
@@ -1156,7 +1402,7 @@ function ReasoningRow({ text, streaming }: { text: string; streaming: boolean })
   )
 }
 
-function MessageFooter({ meta, live }: { meta?: AgentMeta; live: boolean }) {
+function MessageFooter({ meta, live, spin, bg }: { meta?: AgentMeta; live: boolean; spin: boolean; bg?: BgTask[] }) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (!live) return
@@ -1165,12 +1411,18 @@ function MessageFooter({ meta, live }: { meta?: AgentMeta; live: boolean }) {
   }, [live])
   if (live && meta?.startedAt) {
     return (
-      <div className="flex items-center gap-1.5 px-2 pt-1 text-xs text-muted-foreground">
-        {/* 和上面工具行的状态图标同样大小的框，图标上下对齐 */}
-        <span className="flex size-4 shrink-0 items-center justify-center">
-          <Loader className="size-3.5 animate-spin" />
-        </span>
-        <span className="tabular-nums">{fmtDuration(now - meta.startedAt)}</span>
+      // min-w-0：外面一层是横排（右边是点赞），不加的话等后台任务那段长文字撑开整行，对话左右滚
+      <div className="flex min-w-0 items-center gap-1.5 px-2 pt-1 text-xs text-muted-foreground">
+        {/* 和上面工具行的状态图标同样大小的框，图标上下对齐；工具在跑时框留空，计时照样对齐 */}
+        <span className="flex size-4 shrink-0 items-center justify-center">{spin && <Loader className="size-3.5 animate-spin" />}</span>
+        <span className="shrink-0 tabular-nums">{fmtDuration(now - meta.startedAt)}</span>
+        {/* 在等后台任务（比如渲染视频）：写出在等什么、跑了多久，不然只看到一个转圈 */}
+        {!!bg?.length && (
+          <span className="min-w-0 truncate" title={bg.map((x) => x.description).filter(Boolean).join('\n')}>
+            · {bg.length === 1 ? t('在等后台任务：{d}', { d: bg[0].description || t('后台命令') }) : t('在等 {n} 个后台任务', { n: bg.length })}
+            {bg.length === 1 && bg[0].startedAt ? <span className="tabular-nums"> · {fmtDuration(now - bg[0].startedAt)}</span> : null}
+          </span>
+        )}
       </div>
     )
   }
@@ -1193,18 +1445,36 @@ function MessageFooter({ meta, live }: { meta?: AgentMeta; live: boolean }) {
 }
 
 /** 输入框上方的排队消息：这一轮结束后按顺序发出 */
-function QueueList({ items, paused, onResume, onEdit, onRemove }: { items: Queued[]; paused: boolean; onResume: () => void; onEdit: (q: Queued) => void; onRemove: (id: string) => void }) {
+function QueueList({
+  items,
+  paused,
+  interrupting,
+  onResume,
+  onEdit,
+  onSendNow,
+  onRemove,
+}: {
+  items: Queued[]
+  paused: boolean
+  interrupting: boolean
+  onResume: () => void
+  onEdit: (q: Queued) => void
+  onSendNow: (q: Queued) => void
+  onRemove: (id: string) => void
+}) {
   if (!items.length) return null
   return (
     <div className="rounded-xl border border-border bg-background/60 p-1.5">
       <div className="flex items-center justify-between gap-2 px-1.5 pt-0.5 pb-1 text-[11px] text-muted-foreground">
         <span className="inline-flex items-center gap-1.5 font-semibold">
           <Clock className="size-3" />
-          {paused
-            ? t('上一轮出错了，{n} 条排队的消息还没发', { n: items.length })
-            : items.every((q) => q.steered)
-              ? t('{n} 条插话，助手做完手头这一步就会看到', { n: items.length })
-              : t('{n} 条待发，这一轮结束后依次发出', { n: items.length })}
+          {interrupting
+            ? t('正在打断这一轮，停下后马上发送')
+            : paused
+              ? t('上一轮出错了，{n} 条排队的消息还没发', { n: items.length })
+              : items.every((q) => q.steered)
+                ? t('{n} 条插话，助手做完手头这一步就会看到', { n: items.length })
+                : t('{n} 条待发，这一轮结束后依次发出', { n: items.length })}
         </span>
         {paused && (
           <button type="button" onClick={onResume} className="rounded px-1.5 py-0.5 font-semibold text-primary-text outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50">
@@ -1219,16 +1489,30 @@ function QueueList({ items, paused, onResume, onEdit, onRemove }: { items: Queue
               {q.text || <span className="text-muted-foreground">{t('（只有图片）')}</span>}
               {q.files.length > 0 && <span className="ml-1.5 text-[11px] text-muted-foreground">{t('+{n} 张图', { n: q.files.length })}</span>}
             </span>
-            {q.steered ? (
-              <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">{t('等待插入')}</span>
-            ) : (
-              <span className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+            {q.steered && <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground group-hover:hidden">{t('等待插入')}</span>}
+            {/* 立即发送：打断这一轮（插话也一样，不等助手做完手头这一步）。按钮平时悬停才出现，手机没有悬停，一直显示 */}
+            {!interrupting && (
+              <button
+                type="button"
+                onClick={() => onSendNow(q)}
+                aria-label={t('立即发送')}
+                title={paused ? t('立即发送') : t('立即发送：打断助手正在做的这一轮')}
+                className={cn(
+                  'inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 outline-none group-hover:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:size-8 pointer-coarse:opacity-100',
+                  q.steered && 'hidden group-hover:inline-flex pointer-coarse:inline-flex',
+                )}
+              >
+                <ArrowUp className="size-3.5" />
+              </button>
+            )}
+            {!q.steered && (
+              <span className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
                 <button
                   type="button"
                   onClick={() => onEdit(q)}
                   aria-label={t('拿回输入框编辑')}
                   title={t('拿回输入框编辑')}
-                  className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none pointer-coarse:size-8 hover:bg-background hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 >
                   <Pencil className="size-3" />
                 </button>
@@ -1237,7 +1521,7 @@ function QueueList({ items, paused, onResume, onEdit, onRemove }: { items: Queue
                   onClick={() => onRemove(q.id)}
                   aria-label={t('移出队列')}
                   title={t('移出队列')}
-                  className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background hover:text-destructive focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none pointer-coarse:size-8 hover:bg-background hover:text-destructive focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 >
                   <X className="size-3.5" />
                 </button>

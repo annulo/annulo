@@ -64,7 +64,7 @@ func TestSettleFeedback(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() { fbDeliver = old }()
-	s := &Server{}
+	s := newTestServer(nil, nil, nil)
 	click := func(msg, r string) {
 		s.settleFeedback(&fbPayload{ConversationID: "c", MessageID: msg, Rating: r}, 30*time.Millisecond)
 	}

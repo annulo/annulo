@@ -118,7 +118,7 @@ func pullVersion(ctx context.Context, t Template, n int) error {
 
 type Version struct {
 	No        int    `json:"no"`
-	Label     string `json:"label,omitempty"` // git 模板的 tag（v1.2.0）；creght 模板没有，界面显示「第 No 版」
+	Label     string `json:"label,omitempty"` // git 模板的 tag（v1.2.0）、creght 模板版本的标签（v135）；没有时界面显示「第 No 版」
 	Note      string `json:"note"`
 	CreatedAt string `json:"created_at"`
 }
@@ -522,6 +522,10 @@ type ModifiedFile struct {
 // restorePrefix 是恢复提交的说明开头，撤销时认它
 const restorePrefix = "恢复模板文件："
 
+// restoreFilesHeader：合并冲突时恢复、顺带完成合并的那种提交，说明正文在这行后面逐行列出恢复的文件
+// （合并提交 diff-tree 看不出哪些是恢复换掉的，撤销时从这里读）
+const restoreFilesHeader = "恢复的文件："
+
 // Modified 是项目（含没提交的改动）里改过、删掉的模板文件；项目自己加的文件不算。还没有 template 分支返回 nil。
 func Modified(dir string) ([]ModifiedFile, error) {
 	if Base(dir) == 0 {
@@ -540,7 +544,9 @@ func Modified(dir string) ([]ModifiedFile, error) {
 }
 
 // Restore 把 files（必须在 Modified 里）换回 template 分支那一版，先提交手上的改动，再单独提交一次，返回这次提交。
-// 调用方保证助手没在跑。
+// 模板升级停在冲突上时（MERGE_HEAD）也能恢复：template 分支这时就是要合进来的新版，勾的文件直接用它、舍弃项目里的改动，
+// 不用先解决冲突。冲突文件都换掉了就提交，这次升级的合并随之完成（提交说明后面列着恢复的文件，撤销时认它）；
+// 还剩没勾的冲突文件就不提交、返回空串，合并照旧停着，剩下的交给助手。调用方保证助手没在跑。
 func Restore(dir string, files []string) (string, error) {
 	if len(files) == 0 {
 		return "", i18n.New("没有选要恢复的文件", "No files selected to restore")
@@ -553,9 +559,8 @@ func Restore(dir string, files []string) (string, error) {
 		return "", err
 	}
 	defer unlock()
-	if _, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD")); err == nil {
-		return "", i18n.New("模板升级还有冲突没解决完：先解决冲突再恢复", "The template upgrade still has unresolved conflicts: resolve them before restoring")
-	}
+	_, merr := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD"))
+	merging := merr == nil
 	mod, err := Modified(dir)
 	if err != nil {
 		return "", err
@@ -568,6 +573,20 @@ func Restore(dir string, files []string) (string, error) {
 		if !known[f] {
 			return "", i18n.Errorf("%s 和模板一样，或者不是模板里的文件", "%s matches the template or isn't a template file", f)
 		}
+	}
+	if merging {
+		// 合并进行中不能先单独提交手上的改动：直接换，checkout 同时把这些文件在暂存区里标成已解决
+		if _, err := git(dir, append([]string{"--literal-pathspecs", "checkout", templateBranch, "--"}, files...)...); err != nil {
+			return "", err
+		}
+		if len(conflictMarked(dir)) > 0 {
+			return "", nil
+		}
+		if _, err := commit(dir, restorePrefix+summary(files)+"（模板升级的冲突文件用模板的，完成合并）\n\n"+restoreFilesHeader+"\n"+strings.Join(files, "\n")); err != nil {
+			return "", err
+		}
+		sha, err := git(dir, "rev-parse", "HEAD")
+		return strings.TrimSpace(sha), err
 	}
 	if _, err := commit(dir, "恢复模板文件前的改动"); err != nil {
 		return "", err
@@ -602,11 +621,22 @@ func UndoRestore(dir, sha string) ([]string, error) {
 	if _, err := git(dir, "merge-base", "--is-ancestor", sha, "HEAD"); err != nil {
 		return nil, i18n.New("这次恢复不在项目当前的历史里", "That restore isn't in the project's current history")
 	}
-	out, err := git(dir, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha)
-	if err != nil {
-		return nil, err
+	var files []string
+	if body, _ := git(dir, "log", "-1", "--format=%b", sha, "--"); strings.Contains(body, restoreFilesHeader) {
+		// 合并冲突时恢复的：撤销回到升级前项目里的样子（第一个父提交）
+		_, list, _ := strings.Cut(body, restoreFilesHeader)
+		for _, f := range strings.Split(list, "\n") {
+			if f = strings.TrimSpace(f); f != "" {
+				files = append(files, f)
+			}
+		}
+	} else {
+		out, err := git(dir, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha)
+		if err != nil {
+			return nil, err
+		}
+		files = splitZ(out)
 	}
-	files := splitZ(out)
 	if _, err := commit(dir, "撤销恢复模板文件前的改动"); err != nil {
 		return nil, err
 	}

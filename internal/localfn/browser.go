@@ -27,7 +27,7 @@ import (
 
 // BrowserOptions 是 ctx.browser.open 的参数。
 type BrowserOptions struct {
-	Profile   string // 一个账号一个：~/.shuttle/browser/<profile>
+	Profile   string // 一个账号一个：~/.annulo/browser/<项目>/<profile>（按项目分开，见 server/browser.go）
 	URL       string
 	Show      bool // 弹出可见窗口（扫码登录）
 	Offscreen bool // 有界面但放在屏幕外（headless 被网站识别时用）
@@ -40,6 +40,9 @@ type BrowserHost interface {
 	// ProfileID 是本机这个 profile 的 id（存在 profile 目录里）；本机没有这个 profile 返回 ""。
 	ProfileID(profile string) (string, error)
 }
+
+// userBrowsers 由 BrowserHost 选择实现：用户自己的 Chrome 里连着 Annulo 插件的 profile（ctx.browser.user()）
+type userBrowsers interface{ UserBrowsers() any }
 
 // BrowserPage 是打开的一个浏览器。timeout 为 0 用默认值（30 秒）。
 type BrowserPage interface {
@@ -61,13 +64,20 @@ type BrowserPage interface {
 	Close() error
 }
 
-// cleanup 关掉这次运行打开的浏览器、删掉临时文件。
-func (r *runner) cleanup() {
+// keeper 是能在失败时留给用户的浏览器（server 的 browserLease：用户正看着的窗口）
+type keeper interface{ KeepForUser() bool }
+
+// cleanup 关掉这次运行打开的浏览器、删掉临时文件。failed：函数失败了，用户正看着的窗口留着，好看卡在哪一步。
+func (r *runner) cleanup(failed bool) {
 	for _, b := range r.bodies {
 		b.finish()
 	}
 	r.bodies = nil
 	for _, p := range r.pages {
+		if k, ok := p.(keeper); ok && failed && k.KeepForUser() {
+			r.emit(Event{Type: "log", Data: map[string]any{"level": "warn", "message": i18n.T("失败了：浏览器窗口留着，方便看卡在哪一步，看完自己关掉", "Failed: the browser window stays open so you can see where it got stuck; close it when you're done")}})
+			continue
+		}
 		p.Close()
 	}
 	r.pages = nil
@@ -151,6 +161,15 @@ func (r *runner) browserObject() *goja.Object {
 		r.pages = append(r.pages, page)
 		return r.resolved(r.pageObject(page, optStr(m, "profile")))
 	})
+	// user()：用户自己的 Chrome（装了 Annulo 插件、正连着的 profile）→ { profiles: [{ id, name, email, sites, last_active }] }，
+	// 最近用过的在前。open({ profile: '@user' }) 按网站自动选，'@user/<id>' 指定一个。
+	o.Set("user", func() goja.Value {
+		profiles := any([]any{})
+		if u, ok := r.h.Browser.(userBrowsers); ok {
+			profiles = u.UserBrowsers()
+		}
+		return r.vm.ToValue(map[string]any{"profiles": toPlain(profiles)})
+	})
 	// profile(name)：本机的这个 profile（登录态所在的浏览器）→ { id }，没有返回 null。
 	// id 跟着 profile 目录走，用来认「账号的登录态是不是在这个浏览器里」，比认电脑可靠。
 	o.Set("profile", func(name string) goja.Value {
@@ -229,6 +248,32 @@ func (r *runner) pageObject(p BrowserPage, profile string) *goja.Object {
 		return step("type", sel, p.Type(r.ctx, sel, text, optBool(m, "clear"), optMs(m, "timeout")))
 	})
 	o.Set("press", func(key string) *goja.Promise { return done(p.Press(r.ctx, key)) })
+	// act(goal, { until, avoid, maxSteps })：脚本卡住的一步交给浏览器助手（act.go，docs/browser-act.md）；达不成和别的操作一样存现场
+	o.Set("act", func(goal string, v goja.Value) *goja.Promise {
+		m := opts(v)
+		ao := actOptions{Until: optStr(m, "until"), MaxSteps: optInt(m, "maxSteps", 0)}
+		if list, ok := m["avoid"].([]any); ok {
+			for _, x := range list {
+				if s, ok := x.(string); ok {
+					ao.Avoid = append(ao.Avoid, s)
+				}
+			}
+		}
+		res, err := r.act(p, goal, ao)
+		if err != nil {
+			return r.failed(p, profile, "act", goal, err)
+		}
+		return r.resolved(res)
+	})
+	// show()：把这次运行的浏览器窗口调到前台，交给用户接着操作（脚本做到一半、剩下的只有人能做）。之后函数失败时这个窗口留着不关（Manager.Keep）。
+	// 后台无界面运行的（定时任务）调不出来：报错，调用方照原来报错，写清楚要用户做什么
+	o.Set("show", func() *goja.Promise {
+		rv, ok := p.(interface{ Reveal(context.Context) error })
+		if !ok {
+			return r.rejected(i18n.New("这个浏览器调不到前台", "This browser can't be brought to the front"))
+		}
+		return done(rv.Reveal(r.ctx))
+	})
 	o.Set("upload", func(sel string, files goja.Value, v goja.Value) (res *goja.Promise) {
 		// 文件参数不对时 uploadFiles 会 throw：也转成失败的 Promise
 		defer func() {
@@ -294,6 +339,7 @@ func (r *runner) pageObject(p BrowserPage, profile string) *goja.Object {
 	o.Set("setContent", func(html string) *goja.Promise { return done(p.SetContent(r.ctx, html)) })
 	closed := false
 	o.Set("close", func() *goja.Promise { closed = true; return done(p.Close()) })
+	r.agentMethods(o, p) // b.agent 和它用的原语（agent.go）
 	// 归还操作权后的旧句柄不能再去操作另一个任务接管的窗口。
 	for _, name := range o.Keys() {
 		if name == "close" {
@@ -381,6 +427,16 @@ func (r *runner) uploadFiles(v goja.Value) []string {
 		case string:
 			if name, ok := strings.CutPrefix(x, "local:"); ok {
 				// 页面存在本机的文件（视频直接从本机选，不传云端）
+				if name != "" && filepath.Base(name) == name && r.h.FilesDir == "" && r.h.LocalFile != nil {
+					// 节点上：文件在服务器上，先取到临时目录（扩展名留着，网站按它认格式）
+					_, tmp := r.tempFile("file", filepath.Ext(name))
+					if err := r.h.LocalFile(r.ctx, name, tmp); err != nil {
+						os.Remove(tmp)
+						r.throw(i18n.Errorf("从服务器取本机文件 %s 失败：%w", "Failed to fetch local file %s from the server: %w", name, err))
+					}
+					out = append(out, tmp)
+					continue
+				}
 				full := filepath.Join(r.h.FilesDir, filepath.Base(name))
 				if r.h.FilesDir == "" || name == "" || filepath.Base(name) != name {
 					r.throw(i18n.Errorf("upload 的本机文件不对：%q", "Invalid local file for upload: %q", x))

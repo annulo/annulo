@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getLocale } from './i18n'
 
 // App 内更新（electron/updater.cjs）：主进程在后台只检查有没有新版本；有就顶栏出「更新到 <版本>」，
 // 用户在更新弹窗里点「下载」才下载（弹窗里看进度），下好再点「安装并重启」才安装（installing：停服务、换 App，5-10 秒）。
@@ -8,7 +9,10 @@ export type DesktopUpdate = {
   state: 'idle' | 'available' | 'downloading' | 'ready' | 'installing'
   current: string
   version?: string
+  /** 更新说明（英文；老的 update.json 只有这一份） */
   notes?: string
+  /** 各语言的更新说明 { zh, en, … }：useDesktopUpdate 按界面语言挑一份放进 notes */
+  notes_i18n?: Record<string, string>
   received?: number
   bytes?: number
   error?: string
@@ -39,7 +43,8 @@ export function useDesktopUpdate() {
       setState(s)
     })
   }, [])
-  const shown = state && pending && state.state === 'ready' ? { ...state, state: 'installing' as const } : state
+  const withNotes = state && { ...state, notes: state.notes_i18n?.[getLocale()] || state.notes_i18n?.en || state.notes }
+  const shown = withNotes && pending && withNotes.state === 'ready' ? { ...withNotes, state: 'installing' as const } : withNotes
   return {
     /** 在 Annulo App 里（有更新功能）；浏览器直接打开的没有 */
     available: !!bridge(),

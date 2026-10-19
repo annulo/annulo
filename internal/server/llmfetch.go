@@ -13,7 +13,8 @@ import (
 
 // 本机函数和页面用用户在 设置 → 模型 里配好的服务商：ctx.llm.providers() 列出服务商和模型（不含 key），
 // ctx.llm.fetch(服务商, 路径, init) 像 fetch 一样发请求，Shuttle 补上地址和鉴权。
-// Shuttle 不认识具体接口（Responses、联网搜索…），请求体、怎么解析由函数自己写。
+// ctx.llm.fetch 不认识具体接口，请求体、怎么解析由函数自己写；只要「联网搜索后回答」的用 ctx.llm({ web_search: true })（llmask.go），
+// 本机的 Claude Code / Codex 也能用。
 
 // llmProviders：设置 → 模型 里的服务商（creght 平台 + 自己加的 + 本机装了的 Claude Code / Codex），每个带它的模型。
 // kind 是 api（能用 ctx.llm.fetch 发请求）或 cli（本机 agent：助手能用，没有接口地址，ctx.llm.fetch 不能调）。
@@ -26,8 +27,9 @@ func (s *Server) llmProviders(ctx context.Context) []map[string]any {
 		if agent.IsCLIProvider(m.Provider) {
 			cliNames[m.Provider] = agent.CLIName(m.Provider)
 		}
-		// web_search：creght 平台标了能联网搜索的模型；自己加的服务商不知道，都是 false
-		byProvider[m.Provider] = append(byProvider[m.Provider], map[string]any{"id": m.ID, "model": m.Model, "name": m.Label(), "api": m.Api, "web_search": m.WebSearch})
+		// web_search：能联网搜索（ctx.llm 的 web_search）。creght 平台按它标的；本机 agent 用它自己的搜索，都能；
+		// 自己加的服务商不知道，是 false（要它支持 OpenAI Responses 才搜得了）
+		byProvider[m.Provider] = append(byProvider[m.Provider], map[string]any{"id": m.ID, "model": m.Model, "name": m.Label(), "api": m.Api, "web_search": m.WebSearch || agent.IsCLIProvider(m.Provider)})
 	}
 	disabled := s.agent.DisabledProviders()
 	off := func(id string) bool {

@@ -10,7 +10,7 @@ import (
 
 // 产品改名 Annulo 的兼容层（internal/brand）：/_annulo/ 前缀和 X-Annulo 头和旧名字一样管用。
 func TestAnnuloPrefixAndHeader(t *testing.T) {
-	s := &Server{cfg: &config.Config{Port: 7799}}
+	s := newTestServer(&config.Config{Port: 7799}, nil, nil)
 	var seen string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_shuttle/api/", func(w http.ResponseWriter, r *http.Request) { seen = r.URL.Path })

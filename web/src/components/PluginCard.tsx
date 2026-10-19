@@ -66,6 +66,10 @@ export default function PluginCard() {
       .catch((e) => setError((e as Error).message))
   useEffect(() => {
     load()
+    // 模板升级、换模板时会顺带装上、升级插件（TemplateCard 发这个事件）
+    const reload = () => load()
+    window.addEventListener('shuttle:plugins-changed', reload)
+    return () => window.removeEventListener('shuttle:plugins-changed', reload)
   }, [])
 
   const merge = async (key: string, path: string, body: object) => {

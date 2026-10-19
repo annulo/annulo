@@ -12,35 +12,71 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localcmd"
 	"github.com/annulo/annulo/internal/localfn"
 )
 
 // ignore 是项目 .gitignore 的内容：.creght/ 是 creght CLI 的同步状态和备份，AGENTS.md 是它生成的本地说明。
 const ignore = ".creght/\nAGENTS.md\n"
 
-var (
-	availOnce sync.Once
-	availErr  error
-)
+var avail struct {
+	sync.Mutex
+	bin string // 能用的 git 的完整路径，找到了一直用
+	err error  // 上次没找到的原因：留着直到 Recheck，免得 macOS 没装命令行工具时 /usr/bin/git 反复弹安装框
+}
 
-// Available 报告本机能不能用 git（macOS 没装命令行工具时 /usr/bin/git 会报错）。结果缓存。
+// Available 报告本机能不能用 git（macOS 没装命令行工具时 /usr/bin/git 会报错；Windows 要装 Git for Windows）。
 func Available() error {
-	availOnce.Do(func() {
-		if out, err := exec.Command("git", "--version").CombinedOutput(); err != nil {
-			availErr = i18n.Errorf("本机没有可用的 git（macOS 在终端运行 xcode-select --install 安装）：%s", "No usable git on this machine (on macOS, run xcode-select --install in a terminal): %s", strings.TrimSpace(string(out)))
+	_, err := gitBin()
+	return err
+}
+
+// Recheck 丢掉上次「没有 git」的结论重新找：用户装完 git 点「重新检测」，不用重启 App。
+func Recheck() error {
+	avail.Lock()
+	avail.err = nil
+	avail.Unlock()
+	return Available()
+}
+
+// gitBin 是 git 的完整路径：按 localcmd 的 PATH 找（Windows 还看 Git for Windows 的默认安装位置，装完不用重启）。
+func gitBin() (string, error) {
+	avail.Lock()
+	defer avail.Unlock()
+	if avail.bin != "" || avail.err != nil {
+		return avail.bin, avail.err
+	}
+	bin := localcmd.Find("git")
+	detail := "git not found"
+	if bin != "" {
+		out, err := exec.Command(bin, "--version").CombinedOutput()
+		if err == nil {
+			avail.bin = bin
+			return bin, nil
 		}
-	})
-	return availErr
+		detail = strings.TrimSpace(string(out))
+	}
+	if runtime.GOOS == "windows" {
+		avail.err = i18n.Errorf("本机没有可用的 git：安装 Git for Windows（https://git-scm.com/download/win）后点「重新检测」：%s", "No usable git on this machine: install Git for Windows (https://git-scm.com/download/win), then click Check again: %s", detail)
+	} else {
+		avail.err = i18n.Errorf("本机没有可用的 git（macOS 在终端运行 xcode-select --install 安装）：%s", "No usable git on this machine (on macOS, run xcode-select --install in a terminal): %s", detail)
+	}
+	return "", avail.err
 }
 
 func git(dir string, args ...string) (string, error) { return gitEnv(dir, nil, args...) }
 
 func gitEnv(dir string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	bin, err := gitBin()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -143,6 +179,59 @@ func commit(dir, msg string) (bool, error) {
 		return false, err
 	}
 	if _, err := git(dir, "commit", "-q", "--no-verify", "-m", msg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// TakeIncoming：合并停在冲突上时（模板升级、装插件、升级插件），把冲突文件换成要合进来的那一版（MERGE_HEAD），
+// 舍弃项目里的改动，不用解决冲突。files 空是全部冲突文件；那一版里删掉了的文件就删掉。
+// 冲突都没了就提交、完成这次合并，返回 true；还剩（只换了一部分）返回 false，合并照旧停着。调用方保证助手没在跑。
+func TakeIncoming(dir string, files []string) (bool, error) {
+	unlock, err := Lock(dir)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	if _, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD")); err != nil {
+		return false, i18n.New("没有进行中的合并", "There's no merge in progress")
+	}
+	out, err := git(dir, "diff", "--name-only", "-z", "--diff-filter=U")
+	if err != nil {
+		return false, err
+	}
+	unmerged := splitZ(out)
+	if len(files) == 0 {
+		files = unmerged
+	}
+	known := map[string]bool{}
+	for _, f := range unmerged {
+		known[f] = true
+	}
+	for _, f := range files {
+		if !known[f] {
+			return false, i18n.Errorf("%s 没有合并冲突", "%s has no merge conflict", f)
+		}
+	}
+	for _, f := range files {
+		if _, err := git(dir, "cat-file", "-e", "MERGE_HEAD:"+f); err == nil {
+			_, err = git(dir, "--literal-pathspecs", "checkout", "MERGE_HEAD", "--", f)
+			if err != nil {
+				return false, err
+			}
+		} else if _, err := git(dir, "--literal-pathspecs", "rm", "-q", "-f", "--", f); err != nil {
+			return false, err
+		}
+	}
+	if left := conflictMarked(dir); len(left) > 0 {
+		return false, nil
+	}
+	msg, _ := os.ReadFile(filepath.Join(dir, ".git", "MERGE_MSG"))
+	title, _, _ := strings.Cut(strings.TrimSpace(string(msg)), "\n")
+	if title == "" {
+		title = "完成合并"
+	}
+	if _, err := commit(dir, title+"（冲突文件用新版："+summary(files)+"）"); err != nil {
 		return false, err
 	}
 	return true, nil

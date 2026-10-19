@@ -26,7 +26,7 @@ func (s *Server) hostOK(r *http.Request) bool {
 		host = h
 	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
-	return host == "localhost" || net.ParseIP(host) != nil
+	return host == "localhost" || net.ParseIP(host) != nil || hostProject(host) != "" // <项目>.localhost：每个项目一个源（view.go）
 }
 
 func originOK(r *http.Request) bool {
@@ -46,7 +46,17 @@ func hasCSRFHeader(r *http.Request) bool {
 
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.hostOK(r) {
+		if rq := remoteOf(r); rq != nil {
+			// 隧道进来的（remote.go）：Host 是远程域名，不查；认平台带来的设备，跨站照样靠 Origin 和自定义头挡
+			if !s.remoteGuard(w, r, rq) {
+				return
+			}
+		} else if s.cfg.Server {
+			// 服务器上：Host 是部署的域名，不查；要登录（authz.go），跨站照样靠 Origin 和自定义头挡
+			if r = s.authenticate(w, r); r == nil {
+				return
+			}
+		} else if !s.hostOK(r) {
 			w.Header().Set("content-type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusMisdirectedRequest)
 			fmt.Fprintf(w, i18n.T("Host %q 不在白名单里。请用 http://127.0.0.1:%d 访问。\n", "Host %q isn't allowed. Open http://127.0.0.1:%d instead.\n"), r.Host, s.cfg.Port)

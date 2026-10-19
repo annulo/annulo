@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localcmd"
 	"github.com/annulo/annulo/internal/plugin"
 
 	"github.com/sky-valley/pi/coding"
@@ -301,7 +302,11 @@ func (a *Agent) InstallSkill(ctx context.Context, source string, link bool) ([]S
 		args = append(args, repo, filepath.Join(tmp, "repo"))
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(cctx, "git", args...)
+		bin := localcmd.Find("git") // Windows 刚装的 Git for Windows 不在 App 的 PATH 里，按 localcmd 找
+		if bin == "" {
+			bin = "git"
+		}
+		cmd := exec.CommandContext(cctx, bin, args...)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return nil, i18n.Errorf("git clone 失败：%s", "git clone failed: %s", strings.TrimSpace(string(out)))

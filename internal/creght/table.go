@@ -162,6 +162,27 @@ func (c *Client) TableKeys(ctx context.Context, projectID string) (map[string]bo
 	return out, nil
 }
 
+// TableInfo 是项目里的一张表。
+type TableInfo struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
+
+// Tables 列出项目的表，顺序和平台返回的一样（TableID 按 key 取第一个匹配的）。
+func (c *Client) Tables(ctx context.Context, projectID string) ([]TableInfo, error) {
+	var ret struct {
+		List []TableInfo `json:"list"`
+	}
+	if err := c.Get(ctx, fmt.Sprintf("/api/p/project/%s/table_list", url.PathEscape(projectID)), url.Values{"limit": {"200"}}, &ret); err != nil {
+		return nil, err
+	}
+	return ret.List, nil
+}
+
+func (c *Client) DeleteTable(ctx context.Context, projectID, tableID string) error {
+	return c.do(ctx, "DELETE", fmt.Sprintf("/api/p/project/%s/table/%s", url.PathEscape(projectID), url.PathEscape(tableID)), nil, nil, nil)
+}
+
 func (c *Client) CreateTable(ctx context.Context, projectID, key, name, desc string, schema json.RawMessage) error {
 	return c.do(ctx, "POST", fmt.Sprintf("/api/p/project/%s/table", url.PathEscape(projectID)), nil,
 		map[string]any{"key": key, "name": name, "desc": desc, "json_schema": schema}, nil)

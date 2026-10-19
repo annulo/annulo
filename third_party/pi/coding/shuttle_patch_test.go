@@ -45,3 +45,20 @@ func TestShuttleBashEnv(t *testing.T) {
 		t.Fatalf("ANNULO_CHAT_ID = %q", got)
 	}
 }
+
+func TestShuttleShellDescription(t *testing.T) {
+	for _, tool := range []string{"bash", "powershell"} {
+		tl, err := CreateTool(tool, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tl.Parameters.Properties["description"] == nil {
+			t.Fatalf("%s: missing description parameter", tool)
+		}
+		for _, r := range tl.Parameters.Required {
+			if r == "description" {
+				t.Fatalf("%s: description must stay optional", tool)
+			}
+		}
+	}
+}

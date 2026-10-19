@@ -12,14 +12,29 @@ export type Status = {
   creght: { api_host: string; logged_in: boolean; user?: { id: string; username: string; email: string } }
   /** 用户选了不登录、离线使用 */
   offline_mode?: boolean
+  /** 本机能不能用 git（模板、插件、项目历史；Windows 上助手跑命令也要它的 bash）；windows 决定提示怎么装 */
+  git?: { ok: boolean; error: string; windows: boolean }
   /** offline：离线项目（数据只在本机，没有 creght 站点） */
-  backend?: { project_id: string; site_id: string; dir: string; preview_url: string; editor_url: string; offline?: boolean; name?: string }
+  backend?: { project_id: string; site_id: string; dir: string; preview_url: string; offline?: boolean; name?: string }
   llm: { ready: boolean; model: string; error: string; reasoning: boolean; thinking: Thinking; thinking_levels?: Thinking[]; provider: string }
   /** 设置里的界面语言（auto 跟随系统）和生效的语言；外壳、左侧后台、助手都按 locale */
   language?: 'auto' | 'zh' | 'en'
   locale?: 'zh' | 'en'
   /** 助手面板的名字、介绍、示例问题：项目的 annulo.json / shuttle.json 里写的，没写是通用的 */
   assistant?: Assistant
+  /** 服务端部署（ANNULO_MODE=server）：登录的账号；只读角色收起助手和设置 */
+  server?: boolean
+  /** 经隧道远程打开的（手机上）：收起只在电脑上能用的东西（docs/mobile-remote.md「远程访问：隧道」） */
+  remote?: boolean
+  /** 服务端部署时能用个人访问令牌连 creght（平台的能力清单里有 pat） */
+  creght_pat?: boolean
+  /** 能不能用 creght 账号授权（OAuth）连：本机版总能；服务端部署要 https 域名或 localhost */
+  creght_oauth?: boolean
+  user?: { id: string; name: string; role: 'admin' | 'member' | 'viewer' } | null
+  /** 服务端部署给管理员的证书提醒：还没绑域名（IP + 明文）、证书签不下来、快到期 */
+  /** 服务端部署给管理员：官网有新版本 */
+  update?: { current: string; latest: string } | null
+  cert?: { kind: 'no_domain' | 'error' | 'expiring'; domain?: string; message?: string; days_left?: number } | null
 }
 
 export type Assistant = { name: string; intro: string; suggestions: string[] }
@@ -37,16 +52,56 @@ async function errorOf(r: Response, path: string): Promise<Error> {
   return new Error(`${msg || t('（响应里没有错误信息）')} · HTTP ${r.status} ${path}`)
 }
 
+/** 服务端部署时会话过期（被删了、改了密码）：接口回 401，回到登录页 */
+function signedOut(r: Response) {
+  if (r.status === 401 && !location.search.includes('invite=')) location.replace('/_shuttle/')
+}
+
 export async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path, { headers: H })
+  signedOut(r)
   if (!r.ok) throw await errorOf(r, path)
   return (await r.json()) as T
 }
 
 export async function post(path: string, body?: unknown, method = 'POST') {
   const r = await fetch(BASE + path, { method, headers: { ...H, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+  if (!path.startsWith('auth/')) signedOut(r) // 登录页自己处理密码错
   if (!r.ok) throw await errorOf(r, path)
   return r
+}
+
+/** 每个项目一个地址（<项目>.localhost:<端口>，服务端 view.go）：响应里带了别的项目的地址（project_url）就跳过去，返回 true；
+ *  没带或者就是这个项目，返回 false，调用方照旧原地刷新。 */
+export async function followProject(r: Response): Promise<boolean> {
+  let url = ''
+  try {
+    url = ((await r.clone().json()) as { project_url?: string }).project_url ?? ''
+  } catch {
+    return false
+  }
+  if (!url) return false
+  const u = new URL(url)
+  if (u.origin === location.origin) return false
+  location.assign(u.origin + '/_shuttle/' + carryTheme())
+  return true
+}
+
+/** 跳到别的项目时带上选过的主题（每个项目一个源，localStorage 不共用；index.html 读到后记下） */
+function carryTheme() {
+  try {
+    const v = localStorage.getItem('shuttle.theme')
+    return v === 'light' || v === 'dark' ? '?theme=' + v : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 项目自己的地址（在新窗口打开用）：分源时才有（地址是 <项目>.localhost），否则 null */
+export function projectURL(pid: string): string | null {
+  const h = location.hostname
+  if (h !== 'localhost' && !h.endsWith('.localhost')) return null
+  return `${location.protocol}//${pid}.localhost${location.port ? ':' + location.port : ''}/_shuttle/` + carryTheme()
 }
 
 /** 对话里的图片先传到本机，返回界面引用它的地址（/_shuttle/uploads/<name>） */
@@ -140,6 +195,13 @@ export type ModelSettings = {
   /** 新对话自动起名；title_model 是起名用的模型，空 = 跟对话用同一个 */
   auto_title: boolean
   title_model: string
+  /** 浏览器助手（本机函数里的 b.act：脚本卡住的一步让模型帮忙）用的模型，空 = 跟对话用同一个 */
+  browser_model?: string
+  /** 起名、浏览器助手调模型时的思考强度，空 = 不思考 */
+  title_thinking?: Thinking | ''
+  browser_thinking?: Thinking | ''
+  /** 浏览器助手把每一步发给模型的内容、回复和耗时写进运行日志（调试用） */
+  browser_debug?: boolean
   agents?: LocalAgent[]
 }
 
@@ -165,6 +227,8 @@ export type MCPServerStatus = {
   error?: string
   auth_url?: string
   authed: boolean
+  /** Annulo 内置的（creght）：跟着 设置 → 连接 走，不能删、不用授权，只能停用、启用 */
+  managed?: boolean
   tools: MCPToolStatus[]
 }
 

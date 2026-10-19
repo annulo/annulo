@@ -1,0 +1,120 @@
+# Annulo 的更新说明，新的在最上面：每条一个 version 加各语言一段（zh、en……，可以再加别的语言），每种语言写成一行。
+# 还没发的写「version: next」，make release 发版时换成真正的版本号；没写这一版不发。几个人各加了一条 next 也行，发版时按语言合成一条。
+# App 更新时按界面语言显示（没有这种语言用 en）；update.json 的 notes 是 en 那份，老版本 App 只读它。
+# Annulo release notes, newest first: each entry has a version plus one single-line note per language.
+# Write "version: next" for the coming release; make release swaps in the real version.
+
+- version: 2026.10.19
+  zh: "浏览器助手能看着页面把一整件事做完，B站 投稿先用上，页面改了也能自己找到；发布进度能看每一步的耗时和 token。浏览器助手（脚本卡住时帮一步的 AI）能看到更多入口了：不是按钮、用 div 做的入口（比如抖音的「选择封面」），和鼠标移上去才出现的按钮（比如小红书封面缩略图上的「编辑封面」）。以前它看不到这些，只能回「找不到入口」。"
+  en: "The browser assistant can now finish a whole task by looking at the page; Bilibili uploads use it first and keep working when the page changes. Publishing progress shows each step's time and tokens. The browser assistant (the AI that helps when a script gets stuck) now sees more entry points: clickable areas that aren't buttons (like Douyin's \"选择封面\" cover picker) and buttons that only appear when you hover (like \"编辑封面\" on Xiaohongshu's cover thumbnail). Before, it couldn't see them and could only reply that it found no entry."
+- version: 2026.10.17
+  zh: "新增收件箱：项目能接网站表单、Stripe、GitHub 发来的 webhook，可以推到飞书、企业微信、Slack，再交给项目里的函数处理。长对话里助手输出不再卡；别的设备开着的对话会同步显示正在跑的一轮；对话能播放音频、打开 PDF；手机上的设置页排版修好了。"
+  en: "New: Inboxes. Projects can receive webhooks from website forms, Stripe or GitHub, forward them to Feishu, WeCom or Slack, and hand them to a project function. Long chats no longer freeze while the assistant writes; a chat open on another device follows the running turn live; chats play audio and open PDFs; settings lay out properly on phones."
+- version: 2026.10.16-1
+  zh: "在手机、别的电脑上远程打开时，不再出现「打开文件夹」「在访达中显示」「用系统程序打开」这类按钮：它们会在电脑上开窗口，远程的人看不到；文件改成在新标签页里看。"
+  en: "When Annulo is opened remotely from a phone or another computer, buttons like \"Open folder\", \"Show in Finder\" and \"Open with default app\" no longer appear, since they open windows on the computer that the remote person can't see; files open in a new tab instead."
+- version: 2026.10.16
+  zh: "能在手机或别的电脑的浏览器里用这台电脑上的 Annulo 了（设置 → 远程访问，要开通 creght 的远程访问）：后台、助手、项目文件夹都和电脑上一样，每个项目一个地址，扫码打开、用 creght 账号登录；每台新设备第一次打开要在电脑上点允许，顶栏能看到谁在远程用、随时撤销。窄屏上后台和助手分成两页，底部切换。在浏览器里打开时，左上角 Annulo 菜单里能「添加到桌面」，像 App 一样从桌面打开。对话里助手执行的命令先显示一句它在做什么（比如「查看最近的提交」），点开才看完整命令。排队等着发的消息能「立即发送」：打断助手正在做的这一轮，马上发出去（用本机 Claude Code、Codex 时也行）。模板能读写项目工作目录（主目录下的「Annulo/项目名」）里的文件了：自媒体工作台的每条内容有自己的文件夹，稿子、脚本、文案、视频都放在里面，在页面上直接看、直接改。修了偶尔外壳是深色、左边后台页却是浅色（要刷新才好）的问题。"
+  en: "You can now use the Annulo on this computer from a browser on your phone or another computer (Settings → Remote access, needs creght remote access): the back office, the assistant and project folders work just like here. Each project has its own address; scan the QR code and sign in with creght. Each new device has to be allowed on this computer the first time, and the top bar shows who's connected so you can revoke them any time. On narrow screens the back office and the assistant are two pages with a switcher at the bottom. In a browser, the Annulo menu at the top left has \"Add to desktop\" so you can open it from your desktop like an app. Commands the assistant runs in a chat now show a short line saying what they do (like \"Show recent commits\"); click to see the full command. Queued messages can be sent right away with \"Send now\", which interrupts what the assistant is doing (also with local Claude Code or Codex). Templates can now read and write files in the project's work folder (\"Annulo/<project name>\" in your home folder): in Creator studio every piece of content has its own folder for its brief, scripts, copy and videos, which you can view and edit right on the page. Fixed the back-office page sometimes staying light while the rest of the app is dark until you reload."
+- version: 2026.10.15-1
+  zh: "助手做图片、视频、网站时产生的工程和中间文件不再放进项目里，放在你主目录下的「Annulo/项目名」文件夹，在访达里看得到，自己能备份、删除。助手做好的视频能直接存进这台电脑上的项目文件，不传到云端；资料库、文章里还在用的本机视频不会再因为放了 90 天被清理。修了在对话框底部选模型、思考强度时会把输入框里的字直接发出去；选完菜单自动关上。项目里 AI 做的网页、图片、音频、PDF 能直接用系统程序打开（网页用系统浏览器）。对话里能引用项目里的东西：在后台页面上「复制引用」（比如一篇文章、一组图里的第 3 张），贴进对话就显示成带标题和缩略图的小标签，助手直接拿到它的内容和文件。助手、本机函数、定时任务改了数据，后台页面马上跟着更新，不用等助手说完；只是聊天、没改数据时不再刷新页面。"
+  en: "Projects, source files and intermediate files the assistant creates while making images, videos or websites no longer go into your project. They go in an \"Annulo/<project name>\" folder in your home folder, where you can see them in Finder and back them up or delete them yourself. Videos the assistant makes can be saved straight into the project's files on this computer without uploading to the cloud, and local videos still used by the library or an article are no longer cleaned up after 90 days. Fixed picking a model or thinking level at the bottom of the chat sending whatever was in the message box; the menu now closes after you pick. Web pages, images, audio and PDFs AI makes in a project can be opened in your system apps (web pages in your browser). You can reference things from your project in a chat: \"Copy reference\" on a back-office page (an article, or the third image in a set) and paste it into a chat, where it shows as a tag with its title and thumbnail and the assistant gets its content and files. When the assistant, a local function or a schedule changes data, back-office pages update right away instead of waiting for the assistant to finish, and chatting without changing data no longer refreshes them."
+- version: 2026.10.15
+  zh: "可以同时开几个项目了：每个项目有自己的地址，切项目不再打断别的项目里正在跑的对话；项目菜单里鼠标移到项目上，点「在新窗口打开」就能并排看两个项目。设置 → 浏览器 里可以直接装 Annulo 插件了：点「安装插件」按帮助装上，Chrome 开着时会自动连上 Annulo。"
+  en: "You can now keep several projects open at once: each project has its own address, and switching no longer stops chats running in other projects. Hover a project in the project menu and click \"Open in new window\" to work on two side by side. You can now install the Annulo extension from Settings → Browser: click \"Install extension\" and follow the guide; it connects to Annulo automatically while Chrome is open."
+- version: 2026.10.14-2
+  zh: "对话里的多张图排成缩略图，点开看大图，鼠标移上去有「打开」「在访达中显示」按钮；单张图也显示得小一些，不再占满对话。"
+  en: "Several images in a chat now show as a row of thumbnails: click one to see it full size, and hover for Open and Show in Finder. A single image also shows smaller instead of filling the chat."
+- version: 2026.10.14-1
+  zh: "认 Chrome 应用商店版的 Annulo 插件：插件上架后从商店装上就能连上这台电脑上的 Annulo。设置 → Skill 里删除要点两下，第一下会换成写着「确认删除」的按钮，不再像没反应。助手能在对话里直接给你看这台电脑上的图片和视频：登录要扫的二维码、截图、下载或生成的图片和视频直接显示，视频能播放，下面有「打开」「在访达中显示」按钮，用系统程序打开。"
+  en: "Annulo now recognizes the Chrome Web Store version of the Annulo extension, so once it's listed you can install it from the store and it connects to Annulo on this computer. Deleting a skill in Settings → Skills still takes two clicks, but the first now shows a \"Confirm delete\" button instead of seeming to do nothing. The assistant can now show images and videos from this computer right in the chat: sign-in QR codes, screenshots, and downloaded or generated images and videos appear inline, videos play, and buttons below open them in the default app or show them in Finder."
+- version: 2026.10.14
+  zh: "本机函数能在你自己的 Chrome 里操作网页（设置 → 浏览器）：用你在 Chrome 里已经登录好的账号，豆包、DeepSeek 这类网站不用在 Annulo 的浏览器里再登录一遍；要在 Chrome 里装 Annulo 插件，插件正在上架 Chrome 应用商店。Annulo 插件只在你允许的网站上、在它自己打开的窗口里操作，可以随时撤销。外贸模板新版的 AI 搜索推荐用它在 ChatGPT 网页版、DeepSeek、豆包、Kimi、腾讯元宝上提问，需要这一版。修了本机函数读豆包、元宝这类网站的接口时中文变成乱码；模型名太长时不再把对话输入框的发送按钮挤出去。"
+  en: "Local functions can now work in your own Chrome (Settings → Browser), signed in as you already are there, so sites like Doubao or DeepSeek don't need another sign-in in Annulo's browser. It needs the Annulo extension in Chrome, which is on its way to the Chrome Web Store. The extension only works on sites you allow, in windows it opens itself, and you can revoke sites any time. The new Export assistant template's AI search uses it to ask ChatGPT on the web, DeepSeek, Doubao, Kimi and Yuanbao, and needs this version. Fixed Chinese text coming out garbled when local functions read responses from sites like Doubao or Yuanbao, and a long model name no longer pushes the chat's send button out of view."
+- version: 2026.10.11
+  zh: "模板升级、装插件停在冲突上时多了「用新版覆盖」：冲突文件直接换成新版、舍弃项目里的改动，合并就完成了，不用交给助手。设置 → 连接 里的外部账号（Google、Facebook）改成按项目分开：每个项目连自己的账号，别的项目看不到也用不了，断开也只影响这个项目；creght 账号仍然所有项目共用。以前连好的账号升级后会出现在本机每个项目里，不需要的到那个项目里断开就行。本机函数调模型能指定用哪个服务商和模型，还能联网搜索（返回引用的来源）；用这台电脑上的 Claude Code、Codex 时用它们自己的搜索。外贸模板新版的 AI 搜索推荐检测需要这一版。"
+  en: "When a template upgrade or plugin install stops on conflicts, there's now \"Use the new version\": the conflicted files take the new version, dropping the project's changes, and the merge completes without handing it to the assistant. External accounts in Settings → Connections (Google, Facebook) are now per project: each project connects its own accounts, other projects can't see or use them, and disconnecting only affects that project. Your creght account is still shared by all projects. Accounts you connected before appear in every project on this computer after the update; disconnect them in any project that doesn't need them. Local functions can now pick which provider and model to call and can search the web (returning the sources cited); with Claude Code or Codex on this computer, their own search is used. The new Export assistant template's AI search visibility check needs this version."
+- version: 2026.10.9-2
+  zh: 模板升级有冲突时也能「恢复模板文件」：勾选的文件直接换成模板新版、舍弃项目里的改动，不用先解决冲突；冲突文件都换掉了升级就完成，没勾的冲突照旧交给助手。
+  en: "\"Restore template files\" now works while a template upgrade has conflicts: the selected files take the new template version and drop the project's changes, with no need to resolve conflicts first; once every conflicted file is replaced the upgrade completes, and any you didn't select still go to the assistant."
+- version: 2026.10.9-1
+  zh: "外贸模板的升级说明在 creght.com 上也能对上版本（按版本标签对，不再按各集群自己数的版本号）；升级卡片上显示模板的版本标签。creght 网页上点「在 Annulo 中打开」能直接叫起 App：模板确认后自动切到对应区域、连接 creght 账号、新建项目（已经有这个模板的项目会先让你打开它，不会多建一个）；已有的项目直接切过去，本机没有就先拉下来。设置 → 模型 里「起名用的模型」「浏览器助手用的模型」的选择框改窄了；点开的菜单在下面放不下时往上弹，思考强度不会再跑到屏幕外面。"
+  en: "Upgrade notes for the Export assistant template now match on creght.com too (matched by the version tag rather than each region's own version number), and the upgrade card shows the template's version tag. \"Open in Annulo\" on creght pages now launches the app directly: for a template, after you confirm it switches to the right region, connects your creght account and creates the project (if you already have one from that template, it offers to open it instead); for an existing project it switches to it, downloading it first if needed. The model pickers for chat titles and the browser assistant in Settings → Models are narrower, and their menu opens upward when there's no room below, so the thinking level no longer goes off screen."
+- version: 2026.10.9
+  zh: "同一个仓库里的插件各自发版本、各自升级：还没发版的插件不会再显示别的插件的版本和升级说明。本机函数能把网上的图片、文件存进素材库（ctx.upload），导入 Notion 文档时图片不会过期失效；模板的 Notion 导入需要这一版。"
+  en: "Plugins in the same repository now have their own versions and upgrades: a plugin that hasn't been released no longer shows another plugin's versions and notes. Local functions can save images and files from the web into your library (ctx.upload), so images imported from Notion documents don't expire; the template's Notion import needs this version."
+- version: 2026.10.8-7
+  zh: "定时任务可以按业务表里的时间到点运行（排期发布这类），排了期的到点一分钟内就会发出去，不用再每隔几分钟扫一遍；设置 → 定时任务里能看到接下来要跑的。修了新建项目后马上打开页面，偶尔报「运营后台项目里没有 xxx 表」（页面比建表先到，现在会等表建好再读）。"
+  en: "Scheduled tasks can now run when a time stored in a table comes due (like scheduled posts), so scheduled items go out within a minute instead of waiting for the next periodic check; Settings → Scheduled tasks shows what's coming up. Fixed pages opened right after creating a project sometimes failing with \"the back-office project has no xxx table\" (the page got there before the tables were created; it now waits for them)."
+- version: 2026.10.8-6
+  zh: 修了切换项目后页面偶尔一直报「table not found in project」（用了上一个项目的表）。新建项目时每张业务表不再建两份；已经重复的，打开项目时自动删掉空的那张。浏览器助手能认出只有图标的按钮，焦点在要避开的按钮上时不会误按回车。
+  en: "Fixed pages sometimes failing with \"table not found in project\" after switching projects (they were using the previous project's table). New projects no longer get every table created twice; existing duplicates are cleaned up when the project opens by removing the empty copy. The browser assistant now sees icon-only buttons and won't press Enter while focus is on a button it should avoid."
+- version: 2026.10.8-5
+  zh: "新增浏览器助手：发帖、采集这类浏览器自动操作卡在某一步时（平台改了页面、多了个弹窗），让模型看一眼页面帮这一步，再交回脚本；碰到验证码、要重新登录会把浏览器弹出来请你处理，处理完自动继续；帮过的步骤会记下来，下次直接重放。设置 → 模型 里可以选浏览器助手和起名用的模型、思考强度。在页面上点采集、自检、发布时，后台打开的浏览器不再自动缩进程序坞，只是留在当前窗口后面，不会打断你正在做的事。"
+  en: "New browser assistant: when browser automation like posting or collecting gets stuck on a step (a platform changed its page, a popup got in the way), a model looks at the page, helps with that step and hands back to the script; on a CAPTCHA or sign-in it brings the browser up for you and carries on when you're done; steps it solved are remembered and replayed next time. Settings → Models picks the model and thinking level for the browser assistant and for chat titles. When you collect, self-test or publish from a page, the browser opened in the background no longer minimizes into the Dock; it just stays behind your current window without interrupting you."
+- version: 2026.10.8-4
+  zh: 连上 creght 就自动能用 creght MCP，连的是哪个区域（creght.cn / creght.com）就是哪个区域，不用再单独授权；断开 creght 就没有它。设置 → MCP 里它标成「内置」，只能停用、启用。设置 → 连接 里没连 creght 时也能先选区域再连接；开着离线项目时换区域，项目不会被关掉。
+  en: "The creght MCP now comes with your creght connection: it follows the region you're connected to (creght.cn / creght.com) and needs no separate authorization, and it goes away when you disconnect. In Settings → MCP it's marked Built-in and can only be turned on or off. In Settings → Connections you can pick the region before connecting; switching regions no longer closes an open offline project."
+- version: 2026.10.8-3
+  zh: 浏览器的登录状态按项目分开：A 项目登的账号不会出现在 B 项目里（之前共用的浏览器归第一个用到它的项目，另一个项目要重新登录一次）。所有项目都放在 backends 目录下。启动页跟着设置里选的语言，窗口标题显示当前项目名。定时任务可以一键全部打开、全部关闭。修了后台页面偶尔一直报「找不到 import 的文件」，顶栏的刷新按钮会先清掉页面缓存再刷新。发布、自检这类操作失败时，如果你正看着浏览器，窗口不再自动关掉，留着方便看卡在哪一步，看完自己关。网页弹出「离开此网站？」时自动离开，不再卡住。
+  en: "Browser sign-ins are kept per project: an account signed in from project A no longer shows up in project B (a previously shared browser goes to the first project that uses it; the other signs in once more). All projects now live under backends. The startup screen follows the language chosen in Settings, and the window title shows the current project. Schedules can be turned all on or all off at once. Fixed the ops panel sometimes getting stuck on \"can't find the imported file\"; the refresh button in the top bar now clears the page cache before reloading. When publishing or a self-test fails while you're watching the browser, the window now stays open so you can see where it got stuck; close it when you're done. \"Leave site?\" prompts are answered automatically instead of stalling the task."
+- version: 2026.10.8-2
+  zh: 模板、插件的升级说明和 App 的更新说明按界面语言显示（英文界面看英文）。
+  en: Upgrade notes for templates and plugins, and the app's own update notes, now show in your interface language.
+- version: 2026.10.8-1
+  zh: 页面上点的发布、自检、采集、登录可以看着浏览器操作、随时停止：右上角显示正在操作的浏览器，点一下呼出到前台。浏览器在后台启动，不再抢焦点。对话里助手给出的页面链接显示成按钮，点了直接跳过去。报错信息更干净。
+  en: Publishing, self-test, collecting and sign-in started from a page can be watched in the browser and stopped at any time — browsers at work show at the top right, click one to bring it forward. Browsers start in the background and no longer steal focus. Page links from the assistant show as buttons that take you straight there. Cleaner error messages.
+- version: 2026.10.8
+  zh: 对话里助手给出的页面链接显示成按钮，点了左侧直接跳到那个页面（按住 ⌘ 在新标签打开），不再整页刷新；助手做完事会附上去看结果的链接。
+  en: Page links from the assistant show as buttons that open the page on the left (⌘-click for a new tab) without reloading everything; when the assistant finishes it links to the result.
+- version: 2026.10.7-3
+  zh: "没装 git 时顶部会提示去安装（Windows 链到 Git for Windows，Mac 用 xcode-select），装好点「再检查」就行，不用重启 App。模板升级、切换、恢复后，设置里的插件卡片自动刷新。"
+  en: "Without git, a notice at the top links to Git for Windows (or xcode-select on Mac); after installing, click Check again, no restart needed. The plugins card in Settings refreshes after a template upgrade, switch or restore."
+- version: 2026.10.7-2
+  zh: "模板可以要求插件的最低版本：升级、切换、恢复模板时先把插件升到够用的版本，升不了会说是哪个插件；升级卡片列出要装、要升的插件。"
+  en: "Templates can require a minimum plugin version: upgrading, switching or restoring a template first brings plugins up to it, or says which plugin is blocking; the upgrade card lists the plugins that will be installed or upgraded."
+- version: 2026.10.7-1
+  zh: "助手可以替你升级项目的模板（annulo template）。修了两处模板升级失败：文件名只差大小写时，以及模板自带 .gitignore 时。"
+  en: "The assistant can upgrade the project's template for you (annulo template). Fixed template upgrades failing when file names differed only in case, and when the template had its own .gitignore."
+- version: 2026.10.7
+  zh: "没连 creght 时不再打开在线项目：启动和断开 creght 时切到最近的离线项目，没有就回到新建项目页。页面报错不再把浏览器的「ResizeObserver loop」提示当成错误。"
+  en: "Without creght, online projects no longer open: on startup or after disconnecting, Annulo switches to the newest offline project, or back to project setup. The page error banner no longer treats the browser's \"ResizeObserver loop\" notice as an error."
+- version: 2026.10.6-8
+  zh: "选了思考强度马上就高亮；对话里折叠起来的工具调用下面不再显示「运行中…」。"
+  en: "The thinking level you pick is highlighted right away; collapsed tool calls in chat no longer show a \"Running…\" line."
+- version: 2026.10.6-7
+  zh: "后台页面第一次渲染前显示加载中。离线项目里上传的图片能正常显示。助手输出时往上翻，不会再被拉回底部。助手跑完本机函数后页面会自动刷新。"
+  en: "Back-office pages show a loading state until they first render. Images uploaded in offline projects display properly. Scrolling up while the assistant is writing no longer snaps back to the bottom. Pages refresh after the assistant runs a local function."
+- version: 2026.10.6-6
+  zh: "升级模板前先装好新版要用的插件，缺哪个会说清楚。对话里答过的问卷保留你选的选项。"
+  en: "Before upgrading a template, the plugins the new version needs are installed first, and a missing one is named. Answered questionnaires in chat keep the options you picked."
+- version: 2026.10.6-5
+  zh: "内置自媒体工作台模板，和空白模板放在一起；模板和插件列表实时读公开仓库，有新的不用等 App 更新。设置 → 模型 把服务商和模型放在一处，每个模型可以设思考强度；任务可以固定用哪个思考强度。"
+  en: "The creator studio template is built in next to the blank one; the template and plugin lists are read live from the public repositories, so new ones show up without an app update. Settings → Models puts providers and models in one place with a thinking level per model; tasks can fix their thinking level."
+- version: 2026.10.6-4
+  zh: "插件卡片的「从 git 安装」有了示例和提示。顶栏的图标、项目名和按钮对齐了。本机函数能列出已接的 MCP、知道当前用的是哪个助手。"
+  en: "\"Install from git\" on the plugins card now has an example and a hint. The top bar's logo, project name and buttons line up. Local functions can list connected MCP servers and see which assistant is in use."
+- version: 2026.10.6-3
+  zh: "修了交给助手的任务偶尔找不到自己的对话。"
+  en: "Fixed tasks handed to the assistant occasionally not finding their own chat."
+- version: 2026.10.6-2
+  zh: "新增插件：一个项目是一个模板加几个插件，升级、切换、恢复模板时自动装上模板要用的插件。本机函数能运行命令行工具（ctx.exec）。页面没写标题时，标签显示「后台」。"
+  en: "New: plugins. A project is a template plus plugins, and upgrading, switching or restoring a template installs the plugins it uses. Local functions can run command-line tools (ctx.exec). Tabs show \"Back office\" when a page has no title."
+- version: 2026.10.6-1
+  zh: "新建项目直接在页面上完成；用量挪进了设置。设置 → 关于 每次打开都会检查更新。"
+  en: "New projects are created right on the page; usage moved into Settings. Settings → About checks for updates every time it opens."
+- version: 2026.10.6
+  zh: "Shuttle 改名为 Annulo，换了新图标。命令改成 annulo（shuttle 还能用），数据目录改成 ~/.annulo（旧目录自动搬过来）。不连 creght 也能完整使用：模板可以来自任意 git 仓库（内置空白模板），creght 改成在 设置 → 连接 里授权，没连时不显示 creght 的模板和功能；安装包不再带 creght 命令行。7799 端口被占用时自动换一个空闲端口。对话的图片按钮挪到发送旁边。"
+  en: "Shuttle is now Annulo, with a new icon. The command is annulo (shuttle still works) and the data directory is ~/.annulo (the old one moves over automatically). Annulo works fully without creght: templates can come from any git repository (a blank template is built in), creght is connected through Settings → Connections, and its templates and features stay hidden until you connect; installers no longer bundle the creght CLI. If port 7799 is taken, a free port is used instead. The image button in chat moved next to Send."
+- version: 2026.10.5-1
+  zh: "本机函数可以用 设置 → 模型 里配好的服务商调模型，fetch 支持边收边读。起名用的模型菜单里显示服务商名字。"
+  en: "Local functions can call models through the providers in Settings → Models, and fetch can stream responses. The chat-title model menu shows the provider's name."
+- version: 2026.10.5
+  zh: "同一个服务商可以连多个账号（比如两个 Google 账号）。远程访问里列出每个项目的地址，可以复制、打开、扫码。设置 → 模型：自己加的模型按服务商分组，creght 平台和每个本机助手可以单独开关。定时任务里点「查看对话」直接打开正在跑的那段对话。"
+  en: "Connect several accounts of one provider (two Google accounts, say). Remote access lists each project's address to copy, open or scan. Settings → Models groups your own models by provider, and the creght platform and each local agent can be turned on or off. View chat on a running schedule opens that chat directly."
+- version: 2026.10.2
+  zh: "不登录也能用（离线模式）：离线项目的数据都留在这台电脑上。可以用这台电脑上的 Claude Code、Codex 当助手，模型从它们自己那里选。手机上也能打开运营后台、和助手对话（干活的还是这台电脑）。定时任务对本机所有项目都会跑，不只是打开的那个。设置 → 连接 里可以连接、重连、断开 creght 账号。⌘R 只刷新运营后台，⇧⌘R 刷新整个 App。对话里的表格不再被挤成一个字宽。"
+  en: "Use Annulo without signing in (offline mode): offline projects keep their data on this computer. Claude Code and Codex on this computer can be the assistant, with models from their own lists. Open the back office and chat with the assistant from your phone (the work still runs on this computer). Schedules run for every local project, not just the open one. Connect, reconnect or disconnect your creght account in Settings → Connections. ⌘R reloads only the back office; ⇧⌘R reloads the whole app. Tables in chat are no longer squeezed to one character wide."
+- version: 2026.10.1
+  zh: "App 内更新：有新版本时顶栏提示，点一下下载、再点一下安装；设置 → 关于 看当前版本。运营后台改在本机渲染，页面改了保存就刷新。运营后台的页面标签挪到顶栏，对话顶部用圆环显示上下文用了多少。设置 → 项目 里能「恢复模板文件」，项目改坏了可以用模板的文件救回来。"
+  en: "In-app updates: the top bar tells you about a new version; click once to download and again to install, and Settings → About shows the current version. The back office now renders on your computer and refreshes as soon as a page is saved. Back-office tabs moved to the top bar, and a ring in the chat header shows how much context is used. Settings → Project can restore template files to rescue a broken project."

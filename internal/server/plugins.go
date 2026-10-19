@@ -55,29 +55,127 @@ func (s *Server) installProjectPlugins(ctx context.Context, dir string) []string
 	return s.installPlugins(ctx, dir, projectPlugins(dir))
 }
 
-// installTemplatePlugins 模板升级 / 换模板之前，先装上新版本模板要、项目还没装的插件（用户卸掉的不装）。
-// 要在合并之前装：合并有冲突时会停在进行中，那时装不了插件；而新版本模板的代码可能已经用到插件（外贸模板 import 了社媒插件的统计），
-// 不先装，解决完冲突一推送，云端函数打包就会因为找不到插件的文件失败。to 是 0 表示最新版。
-func (s *Server) installTemplatePlugins(ctx context.Context, dir string, t wsgit.Template, to int) []string {
+// installTemplatePlugins 模板升级 / 换模板之前，先装上新版本模板要、项目还没装的插件（用户卸掉的不装），
+// 已经装了、但低于新版本模板要的最低版本（annulo.json 的 plugins_min）的插件先升上去。
+// 要在合并之前做：合并有冲突时会停在进行中，那时装不了插件；而新版本模板的代码可能已经用到插件（外贸模板 import 了社媒插件的统计、
+// 模板页面 import 插件的字段表），不先装、不先升，页面编译不过，解决完冲突一推送，云端函数打包也会因为找不到插件的文件失败。
+// 返回装了、升了哪些；有插件升不到要的版本（插件那边还没发这一版、升级有冲突）返回错误，调用方不要接着合并模板。to 是 0 表示最新版。
+func (s *Server) installTemplatePlugins(ctx context.Context, dir string, t wsgit.Template, to int) ([]string, error) {
 	if to == 0 {
 		vs, err := wsgit.Versions(ctx, t)
 		if err != nil || len(vs) == 0 {
-			return nil
+			return nil, nil
 		}
 		to = vs[0].No
 	}
 	snap, err := wsgit.VersionDir(ctx, t, to)
 	if err != nil {
 		log.Printf("读模板 %s 第 %d 版要哪些插件失败：%v", t.Site, to, err)
-		return nil
+		return nil, nil
 	}
 	want := templatePlugins(snap)
 	for id, src := range userPlugins(dir) {
 		if src == nil || *src == "" {
 			delete(want, id) // 用户卸掉了模板带的这个插件
+		} else if want[id] != "" {
+			want[id] = *src // 用户换了来源：按用户的来源装、升
 		}
 	}
-	return s.installPlugins(ctx, dir, want)
+	done := s.installPlugins(ctx, dir, want)
+	upgraded, err := s.upgradeBelowMin(ctx, dir, want, templatePluginMins(snap), t.Site, to)
+	return append(done, upgraded...), err
+}
+
+// PluginNeed 是模板某一版要的插件版本、项目现在装的是哪一版（模板升级卡片上提示「会先把插件升到 …」）。
+type PluginNeed struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Min         int    `json:"min"`
+	MinLabel    string `json:"min_label"`
+	Base        int    `json:"base,omitempty"` // 项目装的版本；0 是没装
+	BaseLabel   string `json:"base_label,omitempty"`
+	Latest      int    `json:"latest,omitempty"` // 插件来源最新发的版本；比 Min 低时这次升级做不了
+	LatestLabel string `json:"latest_label,omitempty"`
+}
+
+// pluginNeeds 是模板 snap（某一版的文件）要求、项目 dir 现在不够的插件：没装的，或者装的版本低于 plugins_min 的。
+// 用户卸掉的插件不算（模板的代码要用它时由用户自己决定）。查不到插件版本的（没网）照样列出来，Latest 为 0。
+func (s *Server) pluginNeeds(ctx context.Context, dir, snap string) []PluginNeed {
+	want := projectPluginsWith(dir, templatePlugins(snap))
+	mins := templatePluginMins(snap)
+	ids := make([]string, 0, len(mins))
+	for id := range mins {
+		if want[id] != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	var out []PluginNeed
+	for _, id := range ids {
+		base := 0
+		if slices.Contains(plugin.IDs(dir), id) {
+			base = wsgit.PluginBase(dir, id)
+		}
+		if base >= mins[id] {
+			continue
+		}
+		t := s.pluginSource(want[id])
+		n := PluginNeed{ID: id, Name: id, Min: mins[id], MinLabel: wsgit.VersionLabel(t.Site, mins[id]), Base: base}
+		if base > 0 {
+			n.BaseLabel = wsgit.VersionLabel(t.Site, base)
+			m, _ := plugin.ReadMeta(plugin.Root(dir, id), id)
+			n.Name = lang(m.Name)
+		}
+		if vs, err := wsgit.Versions(ctx, t); err == nil && len(vs) > 0 {
+			n.Latest, n.LatestLabel = vs[0].No, wsgit.VersionLabel(t.Site, vs[0].No)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// upgradeBelowMin 把装了、但低于 mins 的插件升到最新版。插件那边最新版还不够、升级报错或有冲突，返回错误（说清楚是哪个插件）。
+func (s *Server) upgradeBelowMin(ctx context.Context, dir string, want map[string]string, mins map[string]int, tplSite string, tplVer int) ([]string, error) {
+	ids := make([]string, 0, len(mins))
+	for id := range mins {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var done []string
+	for _, id := range ids {
+		if want[id] == "" || !slices.Contains(plugin.IDs(dir), id) {
+			continue // 用户不要的，或者上面没装上的（没网）：装上时就是最新版
+		}
+		min := mins[id]
+		if wsgit.PluginBase(dir, id) >= min {
+			continue
+		}
+		site := wsgit.PluginSource(dir, id)
+		if site == "" {
+			site = want[id]
+		}
+		t := s.pluginSource(site)
+		tplLabel, minLabel := wsgit.VersionLabel(tplSite, tplVer), wsgit.VersionLabel(t.Site, min)
+		vs, err := wsgit.Versions(ctx, t)
+		if err != nil {
+			return done, i18n.Errorf("模板 %s 要插件 %s 至少 %s，查插件的版本失败：%s", "Template %s needs plugin %s %s or later, but its versions couldn't be checked: %s", tplLabel, id, minLabel, pluginErr(err))
+		}
+		if len(vs) == 0 || vs[0].No < min {
+			return done, i18n.Errorf("模板 %s 要插件 %s 至少 %s，插件还没发这一版：等插件发版后再升级模板", "Template %s needs plugin %s %s or later, which hasn't been released yet: upgrade the template after the plugin is released", tplLabel, id, minLabel)
+		}
+		res, err := wsgit.UpgradePlugin(ctx, dir, id, t, 0)
+		if err != nil {
+			return done, i18n.Errorf("模板 %s 要插件 %s 至少 %s，升级插件失败：%s", "Template %s needs plugin %s %s or later, and upgrading the plugin failed: %s", tplLabel, id, minLabel, pluginErr(err))
+		}
+		if res.Status == "conflict" {
+			return done, i18n.Errorf("模板 %s 要插件 %s 至少 %s。插件升级和项目里改过的插件文件有冲突：先在 设置 → 项目 → 插件 里把冲突交给助手解决，再升级模板", "Template %s needs plugin %s %s or later. Upgrading the plugin conflicts with changes to its files in this project: resolve that in Settings → Project → Plugins first, then upgrade the template", tplLabel, id, minLabel)
+		}
+		if res.Status == "merged" {
+			done = append(done, id)
+			log.Printf("模板要插件 %s 至少 %s：升到了 %s", id, minLabel, wsgit.VersionLabel(t.Site, res.To))
+		}
+	}
+	return done, nil
 }
 
 func (s *Server) installPlugins(ctx context.Context, dir string, want map[string]string) []string {
@@ -368,6 +466,29 @@ func templatePlugins(dir string) map[string]string {
 	return out
 }
 
+// templatePluginMins 是模板在 annulo.json 里写的插件最低版本："plugins_min": {"social": "0.5.0"}（v 前缀可写可不写）。
+// 插件 id → 版本号（wsgit.SemverNo 的整数）。写错的跳过。单独一个字段，老版本 Annulo 不认它也照常读 plugins。
+func templatePluginMins(dir string) map[string]int {
+	out := map[string]int{}
+	for _, f := range brand.ProjectFiles {
+		b, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			continue
+		}
+		var v struct {
+			Min map[string]string `json:"plugins_min"`
+		}
+		if json.Unmarshal(b, &v) == nil {
+			for id, ver := range v.Min {
+				if n, ok := wsgit.SemverNo(strings.TrimSpace(ver)); ok && plugin.IDRe.MatchString(id) && out[id] == 0 {
+					out[id] = n
+				}
+			}
+		}
+	}
+	return out
+}
+
 // userPlugins 是 user/annulo.json 里写的：来源，或 nil（不要这个插件）。
 func userPlugins(dir string) map[string]*string {
 	out := map[string]*string{}
@@ -390,7 +511,15 @@ func userPlugins(dir string) map[string]*string {
 
 // projectPlugins 是项目要的插件：模板写的，加上用户装的，去掉用户不要的。插件 id → 来源。
 func projectPlugins(dir string) map[string]string {
-	out := templatePlugins(dir)
+	return projectPluginsWith(dir, templatePlugins(dir))
+}
+
+// projectPluginsWith 同 projectPlugins，模板写的换成 tpl（比如模板要升级到的那一版写的）。
+func projectPluginsWith(dir string, tpl map[string]string) map[string]string {
+	out := map[string]string{}
+	for id, src := range tpl {
+		out[id] = src
+	}
 	for id, src := range userPlugins(dir) {
 		if src == nil || *src == "" {
 			delete(out, id)

@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { CloudUpload, HardDrive, Loader } from 'lucide-react'
-import { getJSON, post, type Status } from '@/lib/api'
+import { followProject, getJSON, post, type Status } from '@/lib/api'
+
+// 转在线以后项目 id 变了，地址（<项目>.localhost）跟着变：有新地址就跳过去，没有原地刷新
+const enter = async (url?: string) => {
+  if (!(await followProject(new Response(JSON.stringify({ project_url: url ?? '' }))))) location.reload()
+}
 import { Button } from '@/components/ui/button'
 import { t } from '@/lib/i18n'
 import { navigate } from '@/lib/router'
@@ -16,22 +21,24 @@ export default function OfflineCard() {
   const [err, setErr] = useState('')
   // 转完了，但有本机文件没传上去：先列出来，用户看过再进新项目
   const [failed, setFailed] = useState<{ table: string; ref: string; error: string }[] | null>(null)
+  const [next, setNext] = useState('')
   useEffect(() => {
     getJSON<Status>('status').then(setSt).catch(() => {})
   }, [])
-  if (!st?.backend?.offline) return null
+  if (!st?.backend?.offline || st.server) return null // 服务端部署没有离线 / 在线之分
 
   const goOnline = async () => {
     setBusy(true)
     setErr('')
     try {
       const r = await post('setup/online', {})
-      const out = (await r.json()) as { assets_failed?: { table: string; ref: string; error: string }[] }
+      const out = (await r.json()) as { assets_failed?: { table: string; ref: string; error: string }[]; project_url?: string }
       if (out.assets_failed?.length) {
+        setNext(out.project_url ?? '')
         setFailed(out.assets_failed)
         return
       }
-      location.reload()
+      enter(out.project_url)
     } catch (e) {
       setErr((e as Error).message)
       setBusy(false)
@@ -45,7 +52,7 @@ export default function OfflineCard() {
         <div className="min-w-0">
           <div className="text-[13px] font-bold">{t('这是离线项目')}</div>
           <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-            {t('后台页面、业务数据和上传的文件都只在这台电脑上。本机函数、社媒发布和采集、AI 助手、定时任务照常能用；手机上打开后台、远程访问、表单询盘自动进来（webhook）要转成在线项目才有。')}
+            {t('后台页面、业务数据和上传的文件都只在这台电脑上。离线模式下大多数功能都能用，除了手机端远程访问与控制。')}
           </div>
         </div>
       </div>
@@ -61,7 +68,7 @@ export default function OfflineCard() {
               </li>
             ))}
           </ul>
-          <Button size="sm" onClick={() => location.reload()}>
+          <Button size="sm" onClick={() => enter(next)}>
             {t('知道了，进入项目')}
           </Button>
         </div>

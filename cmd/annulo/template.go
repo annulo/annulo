@@ -50,7 +50,7 @@ func apiBase() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("http://%s/_shuttle/api/", cfg.Addr()), nil
+	return fmt.Sprintf("http://%s/_shuttle/api/", cfg.LocalAddr()), nil
 }
 
 func showTemplate(base string) error {
@@ -71,6 +71,15 @@ func showTemplate(base string) error {
 		Merging       bool   `json:"merging"`
 		Conflicts     []string
 		VersionsError string `json:"versions_error"`
+		PluginNeeds   []struct {
+			Name        string `json:"name"`
+			Min         int    `json:"min"`
+			MinLabel    string `json:"min_label"`
+			Base        int    `json:"base"`
+			BaseLabel   string `json:"base_label"`
+			Latest      int    `json:"latest"`
+			LatestLabel string `json:"latest_label"`
+		} `json:"plugin_needs"`
 		Updates       []struct {
 			No    int    `json:"no"`
 			Label string `json:"label"`
@@ -104,6 +113,21 @@ func showTemplate(base string) error {
 	fmt.Println(i18n.Tf("最新 %s，新版本：", "Latest %s; new versions:", label(t.Latest, t.LatestLabel)))
 	for _, u := range t.Updates {
 		fmt.Printf("  %s  %s\n", label(u.No, u.Label), u.Note)
+	}
+	blocked := false
+	for _, n := range t.PluginNeeds {
+		switch {
+		case n.Latest > 0 && n.Latest < n.Min:
+			blocked = true
+			fmt.Println(i18n.Tf("最新版要插件「%s」至少 %s，插件还没发这一版（最新 %s）：等插件发版后再升级", "The latest version needs plugin \"%s\" %s or later, which hasn't been released (latest %s): upgrade after the plugin is released", n.Name, n.MinLabel, n.LatestLabel))
+		case n.Base > 0:
+			fmt.Println(i18n.Tf("最新版要插件「%s」至少 %s：升级时会先把它从 %s 升到最新", "The latest version needs plugin \"%s\" %s or later: upgrading first takes it from %s to the latest", n.Name, n.MinLabel, n.BaseLabel))
+		default:
+			fmt.Println(i18n.Tf("最新版要插件「%s」：升级时会先装上", "The latest version needs plugin \"%s\": upgrading installs it first", n.Name))
+		}
+	}
+	if blocked {
+		return nil
 	}
 	if t.Requires > t.API {
 		fmt.Println(i18n.Tf("最新版要 Annulo 能力版本 %d，这台是 %d：先更新 Annulo 再升级", "The latest version needs Annulo capability version %d; this one has %d: update Annulo first", t.Requires, t.API))

@@ -59,20 +59,20 @@ func viewProvider(p config.Provider) providerView {
 }
 
 type modelView struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Label     string          `json:"label"`
-	Provider  string          `json:"provider"`
-	Builtin   bool            `json:"builtin"` // creght 平台的模型：列表来自平台，不能改
-	Model     string          `json:"model"`
-	Window    int             `json:"context_window"`
-	Images    bool            `json:"images"`
-	Reasoning bool            `json:"reasoning"`
-	Pricing   *config.Pricing `json:"pricing,omitempty"` // 平台模型：每百万 token 积分
-	Ready     bool            `json:"ready"`
-	Error     string          `json:"error"`
-	Agent     bool            `json:"agent,omitempty"` // 本机的外部 agent
-	agent.ThinkingInfo                // 这个模型支持的思考档位、来源（custom / catalog / default / agent）、用户自己配的
+	ID                 string          `json:"id"`
+	Name               string          `json:"name"`
+	Label              string          `json:"label"`
+	Provider           string          `json:"provider"`
+	Builtin            bool            `json:"builtin"` // creght 平台的模型：列表来自平台，不能改
+	Model              string          `json:"model"`
+	Window             int             `json:"context_window"`
+	Images             bool            `json:"images"`
+	Reasoning          bool            `json:"reasoning"`
+	Pricing            *config.Pricing `json:"pricing,omitempty"` // 平台模型：每百万 token 积分
+	Ready              bool            `json:"ready"`
+	Error              string          `json:"error"`
+	Agent              bool            `json:"agent,omitempty"` // 本机的外部 agent
+	agent.ThinkingInfo                 // 这个模型支持的思考档位、来源（custom / catalog / default / agent）、用户自己配的
 }
 
 func (s *Server) viewModel(m config.LLM) modelView {
@@ -128,7 +128,9 @@ func (s *Server) apiLLMGet(w http.ResponseWriter, r *http.Request) {
 	cur, _ := s.agent.LLM()
 	writeJSON(w, map[string]any{"providers": providers, "models": models, "agents": agents, "active": st.Active, "thinking": st.Thinking, "thinking_levels": config.ThinkingLevels,
 		"thinking_effective": agent.EffectiveThinking(cur, st.Thinking),
-		"auto_title": autoTitle, "title_model": titleModel})
+		"auto_title":         autoTitle, "title_model": titleModel, "browser_model": s.agent.BrowserModel(),
+		"title_thinking": s.agent.SmallThinking("title"), "browser_thinking": s.agent.SmallThinking("browser"),
+		"browser_debug": s.agent.BrowserDebug()})
 }
 
 // apiLLMUpdate：PUT settings/llm {active?, thinking?, auto_title?, title_model?, provider? + enabled?}，切换当前模型、改思考强度、开关服务商、
@@ -139,6 +141,13 @@ func (s *Server) apiLLMUpdate(w http.ResponseWriter, r *http.Request) {
 		Thinking   string  `json:"thinking"`
 		AutoTitle  *bool   `json:"auto_title"`
 		TitleModel *string `json:"title_model"`
+		// browser_model：浏览器助手（b.act）用的模型，"" 表示跟对话用同一个
+		BrowserModel *string `json:"browser_model"`
+		// title_thinking / browser_thinking：起名、浏览器助手的思考强度，"" 或 off = 不思考
+		TitleThinking   *string `json:"title_thinking"`
+		BrowserThinking *string `json:"browser_thinking"`
+		// browser_debug：浏览器助手把每一步的详细过程写进运行日志
+		BrowserDebug *bool `json:"browser_debug"`
 		// provider + enabled：打开或关掉一个服务商（creght 平台、本机 agent、自己加的）
 		Provider string `json:"provider"`
 		Enabled  *bool  `json:"enabled"`
@@ -159,6 +168,26 @@ func (s *Server) apiLLMUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Provider != "" && in.Enabled != nil {
 		if err := s.agent.SetProviderEnabled(in.Provider, *in.Enabled); err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	for kind, v := range map[string]*string{"title": in.TitleThinking, "browser": in.BrowserThinking} {
+		if v != nil {
+			if err := s.agent.SetSmallThinking(kind, *v); err != nil {
+				fail(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+	}
+	if in.BrowserDebug != nil {
+		if err := s.agent.SetBrowserDebug(*in.BrowserDebug); err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if in.BrowserModel != nil {
+		if err := s.agent.SetBrowserModel(*in.BrowserModel); err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return
 		}

@@ -1,0 +1,11 @@
+# Docker 构建只要源码：安装包、依赖、本机构建产物都不带进去（dist 有几个 GB）
+dist
+bin
+**/node_modules
+electron
+macos
+windows
+browser-extension
+.git
+internal/webui/dist
+web/dist

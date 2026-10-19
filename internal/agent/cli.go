@@ -294,7 +294,15 @@ func codexCatalog(ctx context.Context) []engineModel {
 // 命令在哪：按登录 shell 的 PATH 找（internal/localcmd）。
 func findCLI(bin string) string { return localcmd.Find(bin) }
 
-func cliEnv(extra ...string) []string { return localcmd.Env(extra...) }
+// Windows 上 Claude Code 要 Git for Windows 的 bash：明确告诉它在哪，刚装的 Git 不在 App 的 PATH 里也找得到。
+func cliEnv(extra ...string) []string {
+	if os.Getenv("CLAUDE_CODE_GIT_BASH_PATH") == "" {
+		if b := localcmd.GitBash(); b != "" {
+			extra = append([]string{"CLAUDE_CODE_GIT_BASH_PATH=" + b}, extra...)
+		}
+	}
+	return localcmd.Env(extra...)
+}
 
 // cliRun 是一轮外部 agent 的输入。
 type cliRun struct {
@@ -308,6 +316,7 @@ type cliRun struct {
 	model     string // 用哪个模型（--model / -m）；空用它自己配置的
 	thinking  string
 	chatID    string // 这段对话的 id：给它的 bash 带上 ANNULO_CHAT_ID，annulo run 传给本机函数（ctx.chat_id）
+	project   string // 项目 id：ANNULO_PROJECT，annulo run 照它找项目
 	mcpURL    string
 	mcpToken  string
 	extraDirs []string
@@ -390,7 +399,7 @@ func (r cliRun) command(ctx context.Context) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Dir = r.cwd
 	env := append(brand.ChildEnv("MCP_TOKEN", r.mcpToken), brand.ChildEnv("AGENT", r.engine)...)
-	cmd.Env = cliEnv(append(env, brand.ChildEnv("CHAT_ID", r.chatID)...)...)
+	cmd.Env = cliEnv(append(append(env, brand.ChildEnv("CHAT_ID", r.chatID)...), brand.ChildEnv("PROJECT", r.project)...)...)
 	cmd.Stdin = strings.NewReader(r.prompt)
 	cmd.WaitDelay = 3 * time.Second
 	localcmd.SetProcGroup(cmd)
@@ -527,12 +536,35 @@ func claudeTool(name string) string {
 	return name
 }
 
+// claudeWindow：Claude Code 实际用的模型带 [1m] 是 1M 上下文；看不出来返回 0，用配置里的
+func claudeWindow(model string) int {
+	if strings.Contains(model, "[1m]") {
+		return 1000000
+	}
+	return 0
+}
+
 func (p *cliParser) claude(m map[string]any) {
 	switch m["type"] {
 	case "system":
-		if m["subtype"] == "init" {
+		switch m["subtype"] {
+		case "init":
 			p.res.session, _ = m["session_id"].(string)
 			p.res.model, _ = m["model"].(string)
+		case "background_tasks_changed":
+			// 后台任务（Bash 的 run_in_background、后台子 agent）变了：给的是现在还在跑的全部，界面显示在等什么
+			tasks := []map[string]string{}
+			list, _ := m["tasks"].([]any)
+			for _, t := range list {
+				t, _ := t.(map[string]any)
+				id, _ := t["task_id"].(string)
+				desc, _ := t["description"].(string)
+				kind, _ := t["task_type"].(string)
+				if id != "" {
+					tasks = append(tasks, map[string]string{"id": id, "description": desc, "type": kind})
+				}
+			}
+			p.emit(Event{Type: "background", Data: tasks})
 		}
 	case "stream_event":
 		ev, _ := m["event"].(map[string]any)
@@ -593,7 +625,7 @@ func (p *cliParser) claude(m map[string]any) {
 		if u, _ := msg["usage"].(map[string]any); u != nil {
 			total := num(u["input_tokens"]) + num(u["output_tokens"]) + num(u["cache_read_input_tokens"]) + num(u["cache_creation_input_tokens"])
 			if total > 0 {
-				p.emit(Event{Type: "context", ContextTokens: total})
+				p.emit(Event{Type: "context", ContextTokens: total, ContextWindow: claudeWindow(p.res.model)})
 			}
 		}
 	case "user":
@@ -930,14 +962,17 @@ func (a *Agent) runCLI(ctx context.Context, chatID, prompt string, images []stri
 		model = l.Model
 	}
 	r := cliRun{engine: l.Provider, bin: bin, cwd: cwd, system: system, prompt: prompt, images: images, session: session, model: model, thinking: thinking,
-		chatID: chatID, extraDirs: []string{a.installedDir()}}
+		chatID: chatID, project: a.ws, extraDirs: []string{a.installedDir()}}
 	if a.MCPURL != "" {
 		r.mcpURL, r.mcpToken = a.MCPURL, a.mcpToken
 	}
 	window := l.Window()
 	res, err := r.exec(runCtx, func(e Event) {
 		if e.Type == "context" {
-			e.ContextWindow = window
+			// 实际跑的模型（init 里的 model）知道窗口就用它：选「默认」时配置里只有 200k，实际可能是 1M
+			if e.ContextWindow == 0 {
+				e.ContextWindow = window
+			}
 			st.ContextTokens = e.ContextTokens
 		}
 		if e.Type == "tool_end" {
@@ -956,8 +991,8 @@ func (a *Agent) runCLI(ctx context.Context, chatID, prompt string, images []stri
 	}
 	if res.model != "" {
 		st.Model = l.Label() + " · " + res.model
-		if strings.Contains(res.model, "[1m]") {
-			st.ContextWindow = 1000000
+		if w := claudeWindow(res.model); w > 0 {
+			st.ContextWindow = w
 		}
 	}
 	st.DurationMs = time.Since(start).Milliseconds()
@@ -1001,7 +1036,7 @@ func (a *Agent) setCLISession(chatID, engine, session string) {
 }
 
 // cliComplete 用外部 agent 答一次（起标题、本机函数的 ctx.llm）：不带工具、不留会话。
-func cliComplete(ctx context.Context, engine, system, prompt string) (string, error) {
+func cliComplete(ctx context.Context, engine, model, system, prompt string) (string, error) {
 	bin := ""
 	for _, e := range cliEngines {
 		if e.id == engine {
@@ -1018,8 +1053,15 @@ func cliComplete(ctx context.Context, engine, system, prompt string) (string, er
 		if system != "" {
 			args = append(args, "--system-prompt", system)
 		}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
 	case EngineCodex:
-		args = []string{"exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "model_reasoning_effort=\"low\"", "-"}
+		args = []string{"exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "model_reasoning_effort=\"low\""}
+		if model != "" {
+			args = append(args, "-m", model)
+		}
+		args = append(args, "-")
 		if system != "" {
 			prompt = system + "\n\n" + prompt
 		}

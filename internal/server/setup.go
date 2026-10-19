@@ -18,6 +18,7 @@ import (
 
 	"github.com/annulo/annulo/internal/i18n"
 
+	"github.com/annulo/annulo/internal/auth"
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/version"
 	"github.com/annulo/annulo/internal/wsgit"
@@ -160,6 +161,9 @@ type tplEntry struct {
 func templatesOn(host string) []*templateDef {
 	git := gitTemplates()
 	if _, err := creght.ReadToken(host); err != nil {
+		return git
+	}
+	if !creght.Has(host, "templates") { // 自己部署的 creght 没有模板（能力清单里没有 templates）
 		return git
 	}
 	return append(creghtTemplatesOn(host), git...)
@@ -325,6 +329,8 @@ type backendInfo struct {
 	Template       string `json:"template"`
 	TemplateName   string `json:"template_name"`
 	TemplateLatest int    `json:"template_latest,omitempty"`
+	// TemplateLatestLabel：git 模板的最新版本显示成 v1.2.0（TemplateLatest 是换算后的整数）
+	TemplateLatestLabel string `json:"template_latest_label,omitempty"`
 	// Offline：离线项目（只在本机，数据在本机 SQLite）
 	Offline bool `json:"offline,omitempty"`
 }
@@ -383,6 +389,15 @@ func (s *Server) apiSetupGet(w http.ResponseWriter, r *http.Request) {
 		"api_host":     host,
 		"dir":          filepath.Join(s.cfg.Dir, "backends"),
 		"backends":     offline,
+		"server":       s.cfg.Server, // 服务端部署：界面上没有离线 / 在线之分
+	}
+	// 服务端部署：只有管理员能新建项目（authz.go），界面上别人看不到新建
+	if u := userOf(r.Context()); s.cfg.Server && (u == nil || u.Role != auth.Admin) {
+		res["can_create"] = false
+	}
+	if s.ready.Load() {
+		// 这个视图的项目和它的地址：新建 / 切换后界面跳过去（每个项目一个源，见 view.go）
+		res["project_id"], res["project_url"] = s.ws.ProjectID, s.projectURLFor(r, s.ws.ProjectID)
 	}
 	// 模板：git 的不用连 creght；creght 的连上才出现（外贸助手现在免费，连上就能用），付费的还要有订阅
 	tpls := []map[string]any{}
@@ -390,11 +405,19 @@ func (s *Server) apiSetupGet(w http.ResponseWriter, r *http.Request) {
 		tpls = append(tpls, t.view(tokErr == nil))
 	}
 	res["templates"] = tpls
-	if tokErr == nil {
+	if tokErr == nil && !s.cfg.Server { // 服务端部署只列服务器上的项目：不从 creght 拉在线项目
 		if list, err := s.listBackends(r.Context()); err == nil {
 			for i := range list {
 				if t := templateByKey(host, list[i].Template); t != nil && list[i].Local {
 					list[i].TemplateLatest = s.templateLatest(r.Context(), *t)
+					if site := t.Site(); wsgit.IsGitSite(site) {
+						if list[i].TemplateBase > 0 {
+							list[i].TemplateBaseLabel = wsgit.VersionLabel(site, list[i].TemplateBase)
+						}
+						if list[i].TemplateLatest > 0 {
+							list[i].TemplateLatestLabel = wsgit.VersionLabel(site, list[i].TemplateLatest)
+						}
+					}
 				}
 			}
 			res["backends"] = append(list, offline...)
@@ -420,8 +443,8 @@ func (s *Server) apiSetupRun(w http.ResponseWriter, r *http.Request) {
 	if in.Action == "" {
 		in.Action = "new"
 	}
-	if s.agent.Busy() {
-		fail(w, http.StatusConflict, i18n.New("运营助手正在执行，等它做完再切换项目", "The assistant is working; wait until it finishes before switching projects"))
+	if u := userOf(r.Context()); s.cfg.Server && in.Action == "new" && (u == nil || u.Role != auth.Admin) {
+		fail(w, http.StatusForbidden, errForbidden) // 新建项目只有管理员能做（打开已有的谁都行）
 		return
 	}
 	s.setup.mu.Lock()
@@ -442,9 +465,14 @@ func (s *Server) apiSetupRun(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch in.Action {
 	case "use":
+		if s.cfg.Server && !creght.IsOfflineID(in.ProjectID) {
+			err = i18n.New("服务器上只能打开服务器上的项目", "On a server you can only open projects stored on this server")
+			break
+		}
 		ws, err = s.useBackend(r.Context(), in.ProjectID, progress)
 	case "new":
-		if _, tokErr := creght.ReadToken(s.creghtHost()); in.Offline || tokErr != nil || wsgit.IsGitSite(in.Template) {
+		// 服务端部署：项目一律存在 Annulo 这边（没有「在线项目」）
+		if _, tokErr := creght.ReadToken(s.creghtHost()); in.Offline || s.cfg.Server || tokErr != nil || wsgit.IsGitSite(in.Template) {
 			ws, err = s.newOfflineBackend(r.Context(), in.Template, in.Name)
 		} else {
 			ws, err = s.newBackend(r.Context(), in.Template, in.Name, progress)
@@ -479,9 +507,9 @@ func (s *Server) apiSetupRun(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, err)
 		return
 	}
-	s.agent.SetWorkspace(ws.ProjectID, ws.Dir)
-	s.Attach(ws)
-	s.apiSetupGet(w, r)
+	// 打开它（别的项目照常开着、对话照常跑），界面跳到这个项目的地址（view.go）
+	s.rememberProject(w, ws.ProjectID)
+	s.activate(ws).apiSetupGet(w, r)
 }
 
 // apiSetupRename 改项目的名字（就是 creght 项目名）。只能改自己账号下的项目。
@@ -614,6 +642,18 @@ func (s *Server) apiSetupDelete(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, i18n.New("正在用的项目不能删，先切换到别的项目", "The project in use can't be deleted; switch to another project first"))
 		return
 	}
+	// 在别的窗口开着：有对话在跑就不删，没有就先关掉（文件监听、数据库都放下）再删
+	if v := s.openView(in.ProjectID); v != nil {
+		if v.agent.Busy() {
+			fail(w, http.StatusConflict, i18n.New("这个项目里还有对话在跑，等它做完再删", "A chat is still running in this project; wait until it finishes before deleting it"))
+			return
+		}
+		v.Detach()
+	}
+	if s.cfg.Backend == in.ProjectID {
+		s.cfg.Backend = ""
+		s.cfg.Save()
+	}
 	if creght.IsOfflineID(in.ProjectID) {
 		if err := s.deleteOffline(in.ProjectID, in.Name); err != nil {
 			fail(w, http.StatusBadRequest, err)
@@ -645,15 +685,6 @@ func (s *Server) apiSetupDelete(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, i18n.Errorf("删除失败：%w", "Delete failed: %w", err))
 		return
 	}
-	trash := filepath.Join(s.cfg.Dir, "trash", in.ProjectID+"-"+time.Now().Format("20060102-150405"))
-	for name, dir := range map[string]string{"backend": s.cfg.DirFor(in.ProjectID), "workspace": filepath.Join(s.cfg.Dir, "workspaces", in.ProjectID)} {
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		os.MkdirAll(trash, 0o700)
-		if err := os.Rename(dir, filepath.Join(trash, name)); err != nil {
-			log.Printf("把 %s 挪到回收站失败：%v", dir, err)
-		}
-	}
+	s.moveToTrash(in.ProjectID)
 	s.apiSetupGet(w, r)
 }

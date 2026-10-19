@@ -1,11 +1,15 @@
 package mcphub
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -63,23 +67,71 @@ func TestSetToolsEnabled(t *testing.T) {
 	}
 }
 
-func TestEnsureServer(t *testing.T) {
+func TestSetManaged(t *testing.T) {
 	h := New(t.TempDir())
-	os.WriteFile(h.File(), []byte(`{"mcpServers":{"a":{"command":"x","disabled":true}},"keep":1}`), 0o600)
-	if err := h.EnsureServer("creght", ServerConfig{Type: "http", URL: "https://c/api/mcp", Disabled: true}); err != nil {
+	defer h.Close()
+	read := func() map[string]any {
+		b, _ := os.ReadFile(h.File())
+		var c map[string]any
+		json.Unmarshal(b, &c)
+		return c
+	}
+	tok := func(context.Context) (string, error) { return "t", nil }
+	// 以前用户自己加的（为了躲 OAuth 停用了、改了地址）：接管过来，只留关掉的工具
+	os.WriteFile(h.File(), []byte(`{"mcpServers":{"a":{"command":"x","disabled":true},"creght":{"type":"http","url":"https://old","disabled":true,"excludeTools":["t1"]}},"keep":1}`), 0o600)
+	if err := h.SetManaged("creght", &Managed{URL: "https://c/api/mcp", Token: tok}); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(h.File())
-	var c map[string]any
-	json.Unmarshal(b, &c)
-	srv := c["mcpServers"].(map[string]any)
-	if srv["creght"].(map[string]any)["url"] != "https://c/api/mcp" || srv["a"] == nil || c["keep"] == nil {
-		t.Fatalf("应该加上 creght、保留别的：%s", b)
+	c := read()
+	cr := c["mcpServers"].(map[string]any)["creght"].(map[string]any)
+	if cr["url"] != "https://c/api/mcp" || cr["managed"] != true || cr["disabled"] != nil || len(cr["excludeTools"].([]any)) != 1 || c["keep"] == nil || c["mcpServers"].(map[string]any)["a"] == nil {
+		t.Fatalf("应该接管 creght、保留别的：%v", c)
 	}
-	// 已经有了（用户改过）就不动
-	os.WriteFile(h.File(), []byte(`{"mcpServers":{"creght":{"type":"http","url":"https://mine","disabled":true}}}`), 0o600)
-	h.EnsureServer("creght", ServerConfig{Type: "http", URL: "https://c/api/mcp"})
-	if b, _ := os.ReadFile(h.File()); !strings.Contains(string(b), "https://mine") {
-		t.Fatalf("不该覆盖用户的配置：%s", b)
+	// 用户停用了内置的：换集群时保留停用
+	b, _ := os.ReadFile(h.File())
+	h.SaveConfig([]byte(strings.Replace(string(b), `"managed": true`, `"managed": true, "disabled": true`, 1)))
+	h.SetManaged("creght", &Managed{URL: "https://com/api/mcp", Token: tok})
+	cr = read()["mcpServers"].(map[string]any)["creght"].(map[string]any)
+	if cr["url"] != "https://com/api/mcp" || cr["disabled"] != true {
+		t.Fatalf("换集群应改地址、保留停用：%v", cr)
+	}
+	// 在 JSON 里删掉、改地址：保存时补回来
+	h.SaveConfig([]byte(`{"mcpServers":{}}`))
+	if cr, _ := read()["mcpServers"].(map[string]any)["creght"].(map[string]any); cr == nil || cr["url"] != "https://com/api/mcp" {
+		t.Fatalf("删掉内置的应补回来：%v", read())
+	}
+	if h.Logout("creght") == nil {
+		t.Fatal("内置的不能退出授权")
+	}
+	if st := h.Status(); len(st) != 1 || !st[0].Managed {
+		t.Fatalf("状态应标出内置：%+v", st)
+	}
+	// 断开 creght：去掉
+	h.SetManaged("creght", nil)
+	if _, ok := read()["mcpServers"].(map[string]any)["creght"]; ok {
+		t.Fatal("断开后应去掉 creght")
+	}
+}
+
+func TestManagedSendsToken(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	h := New(t.TempDir())
+	h.CallbackURL = "http://localhost/cb"
+	defer h.Close()
+	h.SetManaged("creght", &Managed{URL: srv.URL, Token: func(context.Context) (string, error) { return "abc", nil }})
+	for i := 0; i < 100; i++ {
+		if st := h.Status(); len(st) == 1 && st[0].Status == "failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	st := h.Status()
+	if got != "Bearer abc" || st[0].Status != "failed" || st[0].AuthURL != "" {
+		t.Fatalf("内置的应带 token、不发起 OAuth：auth=%q status=%+v", got, st)
 	}
 }

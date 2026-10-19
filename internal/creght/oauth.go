@@ -44,6 +44,10 @@ type oauthFile struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	Expiry       time.Time `json:"expiry,omitempty"`
 	Scope        string    `json:"scope,omitempty"`
+	// ClientRedirect：ClientID 注册时报的回调地址（空 = 本机回环地址）。服务端部署用 https 域名回调，换了就重新注册
+	ClientRedirect string `json:"client_redirect,omitempty"`
+	// Static：自己部署的 creght 的管理员令牌（不是 OAuth，不过期、不刷新；weave docs/architecture/selfhost-export.md「认证」）
+	Static bool `json:"static,omitempty"`
 }
 
 // tokenDir 是 creght 连接的目录（数据目录下，和 config.Load 一样，brand.DataDir）。
@@ -96,6 +100,9 @@ func retryShared(op func() error) error {
 // oauthToken 是 host 的 access token，快过期就刷新；没连过返回 ErrNotLoggedIn，授权失效返回 ErrReconnect。
 func oauthToken(ctx context.Context, host string) (string, error) {
 	f, err := readOAuth(host)
+	if err == nil && f.Static && f.AccessToken != "" {
+		return f.AccessToken, nil
+	}
 	if err != nil || f.RefreshToken == "" {
 		return "", ErrNotLoggedIn
 	}
@@ -188,14 +195,31 @@ func tokenRequest(ctx context.Context, host string, form url.Values) (*tokenResp
 	return &t, nil
 }
 
-// registerClient 在集群上注册一次原生客户端（回环地址的端口不参与匹配），client id 记下来以后接着用。
-func registerClient(ctx context.Context, host string) (string, error) {
-	if f, err := readOAuth(host); err == nil && f.ClientID != "" {
+// loopbackRedirect：本机回环地址的回调（平台匹配时不看端口）
+var loopbackRedirect = "http://127.0.0.1" + brand.URLPrefix + "oauth/callback"
+
+// registeredRedirect 是注册客户端时报的回调：本机回环地址统一报 127.0.0.1（不带端口）；服务端部署的 https 地址原样报。
+func registeredRedirect(redirect string) string {
+	u, err := url.Parse(redirect)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	return redirect
+}
+
+// registerClient 在集群上注册一次客户端，client id 记下来以后接着用。回调地址换了（本机 ↔ 服务器域名）就重新注册。
+func registerClient(ctx context.Context, host, redirect string) (string, error) {
+	reg := registeredRedirect(redirect)
+	if f, err := readOAuth(host); err == nil && f.ClientID != "" && f.ClientRedirect == reg {
 		return f.ClientID, nil
+	}
+	uris := []string{loopbackRedirect}
+	if reg != "" {
+		uris = []string{reg}
 	}
 	body, _ := json.Marshal(map[string]any{
 		"client_name":                brand.Name,
-		"redirect_uris":              []string{"http://127.0.0.1" + brand.URLPrefix + "oauth/callback"},
+		"redirect_uris":              uris,
 		"token_endpoint_auth_method": "none",
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
@@ -218,7 +242,7 @@ func registerClient(ctx context.Context, host string) (string, error) {
 	if f == nil {
 		f = &oauthFile{Host: host}
 	}
-	f.ClientID = r.ClientID
+	f.ClientID, f.ClientRedirect = r.ClientID, reg
 	return r.ClientID, writeOAuth(f)
 }
 
@@ -242,10 +266,11 @@ func randToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// StartOAuth 生成授权页地址（用户在浏览器里打开），redirect 是本机的 /_shuttle/oauth/callback（带端口）。
+// StartOAuth 生成授权页地址（用户在浏览器里打开），redirect 是 Annulo 的 /_shuttle/oauth/callback：
+// 本机是 http://127.0.0.1:<端口>/…，服务端部署是 https://<域名>/…（平台只认 https 或本机回环地址）。
 func StartOAuth(ctx context.Context, apiHost, redirect string) (authURL, state string, err error) {
 	host := normHost(apiHost)
-	cid, err := registerClient(ctx, host)
+	cid, err := registerClient(ctx, host, redirect)
 	if err != nil {
 		return "", "", err
 	}
@@ -289,6 +314,12 @@ func FinishOAuth(ctx context.Context, state, code, errCode string) (string, erro
 	return p.Host, writeOAuth(f)
 }
 
+// Connected：host 上连着 creght（本机有能刷新的授权）。只看本机文件、不发请求；授权被平台作废的要等用到时才知道。
+func Connected(apiHost string) bool {
+	f, err := readOAuth(normHost(apiHost))
+	return err == nil && (f.RefreshToken != "" || f.Static && f.AccessToken != "")
+}
+
 // Disconnect 断开 host 上的 creght 连接：删掉本机的 token（client id 留着，下次连接不用再注册）。
 func Disconnect(apiHost string) error {
 	host := normHost(apiHost)
@@ -296,7 +327,7 @@ func Disconnect(apiHost string) error {
 	if err != nil {
 		return nil
 	}
-	f.AccessToken, f.RefreshToken, f.Expiry, f.Scope = "", "", time.Time{}, ""
+	f.AccessToken, f.RefreshToken, f.Expiry, f.Scope, f.Static = "", "", time.Time{}, "", false
 	return writeOAuth(f)
 }
 
@@ -308,6 +339,11 @@ func CLIEnv(apiHost string) []string {
 		env = append(env, "CREGHT_TOKEN="+tok)
 	}
 	return env
+}
+
+// StoreStaticToken 存自己部署的 creght 的管理员令牌（不过期、不刷新）。
+func StoreStaticToken(apiHost, token string) error {
+	return writeOAuth(&oauthFile{Host: normHost(apiHost), AccessToken: token, Static: true})
 }
 
 // StoreToken 直接存一份 host 的 access token（refresh token 填个占位）：测试里装作已经连上 creght 用。

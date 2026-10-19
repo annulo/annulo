@@ -4,7 +4,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { newer, pickUpdate, assetKey, allowedURL, macAppBundle, createUpdater } = require('./updater.cjs')
+const { newer, pickUpdate, releaseNotes, assetKey, allowedURL, macAppBundle, createUpdater } = require('./updater.cjs')
 
 const sha = '0'.repeat(64)
 const feed = version => ({ version, downloads: {
@@ -31,8 +31,31 @@ test('picks this machine\'s installer only when it is newer and well-formed', ()
   assert.equal(pickUpdate(bad, '2026.9.29', 'darwin', 'arm64'), null)
 })
 
+test('release notes list every version newer than the running one', () => {
+  const f = { ...feed('2026.10.7-3'), notes: 'c', releases: [
+    { version: '2026.10.7-3', notes: 'c' }, { version: '2026.10.7-2', notes: 'b' }, { version: '2026.10.7-1', notes: 'a' },
+  ] }
+  assert.equal(releaseNotes(f, '2026.10.7-2'), 'c')
+  assert.equal(releaseNotes(f, '2026.10.7-1'), '2026.10.7-3\nc\n\n2026.10.7-2\nb')
+  assert.equal(pickUpdate(f, '2026.10.7-1', 'darwin', 'arm64').notes, '2026.10.7-3\nc\n\n2026.10.7-2\nb')
+  assert.equal(releaseNotes(feed('2026.10.8'), '2026.10.7'), '')
+})
+
+test('release notes per language: pick the language, fall back to en, then the plain notes', () => {
+  const f = { ...feed('2026.10.9-1'), notes: 'B', notes_i18n: { zh: '乙', en: 'B' }, releases: [
+    { version: '2026.10.9-1', notes: 'B', notes_i18n: { zh: '乙', en: 'B' } },
+    { version: '2026.10.9', notes: 'A', notes_i18n: { en: 'A' } },
+    { version: '2026.10.8', notes: '旧' },
+  ] }
+  const u = pickUpdate(f, '2026.10.7', 'darwin', 'arm64')
+  assert.equal(u.notes, '2026.10.9-1\nB\n\n2026.10.9\nA\n\n2026.10.8\n旧')
+  assert.deepEqual(u.notes_i18n, { zh: '2026.10.9-1\n乙\n\n2026.10.9\nA\n\n2026.10.8\n旧', en: u.notes })
+  assert.deepEqual(pickUpdate(f, '2026.10.9', 'darwin', 'arm64').notes_i18n, { zh: '乙', en: 'B' })
+  assert.deepEqual(pickUpdate(feed('2026.10.9'), '2026.10.8', 'darwin', 'arm64').notes_i18n, {})
+})
+
 test('feeds and downloads must be https, except localhost for testing', () => {
-  assert.equal(allowedURL('https://annulo.creght.cn/update.json'), true)
+  assert.equal(allowedURL('https://annulo.dev/update.json'), true)
   assert.equal(allowedURL('http://127.0.0.1:8000/update.json'), true)
   for (const u of ['http://example.com/a', 'file:///tmp/a.dmg', 'javascript:1']) assert.equal(allowedURL(u), false)
 })

@@ -55,9 +55,25 @@ func NewClient(apiHost string) *Client {
 	return &Client{APIHost: normHost(apiHost), http: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// StatusError 是平台接口没成功：状态码和平台给的原因。
+type StatusError struct {
+	Status        int
+	Path, Message string
+}
+
+func (e *StatusError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("creght %s: %s", e.Path, e.Message)
+	}
+	return fmt.Sprintf("creght %s: HTTP %d", e.Path, e.Status)
+}
+
 type apiError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code         int    `json:"code"`
+	Message      string `json:"message"`
+	Quota        string `json:"quota"`
+	Reason       string `json:"reason"`
+	SubscribeURL string `json:"subscribe_url"`
 }
 
 // Get 调平台接口，结果解到 out。每次都重新读 token：用户在另一个终端重新 login 后不用重启。
@@ -107,12 +123,14 @@ func (c *Client) send(ctx context.Context, method, path string, q url.Values, in
 	if resp.StatusCode != http.StatusOK {
 		var e apiError
 		if json.Unmarshal(respBody, &e) == nil && e.Code == CodeSubscriptionRequired {
+			if e.Quota != "" { // 统一的额度拒绝（docs/billing.md「额度提示」）；errors.Is(err, ErrSubscriptionRequired) 照旧成立
+				return &QuotaError{Status: resp.StatusCode, Quota: e.Quota, Reason: e.Reason, Message: e.Message, SubscribeURL: e.SubscribeURL}
+			}
 			return ErrSubscriptionRequired
 		}
-		if json.Unmarshal(respBody, &e) == nil && e.Message != "" {
-			return fmt.Errorf("creght %s: %s", path, e.Message)
-		}
-		return fmt.Errorf("creght %s: HTTP %d", path, resp.StatusCode)
+		e.Message = ""
+		json.Unmarshal(respBody, &e)
+		return &StatusError{Status: resp.StatusCode, Path: path, Message: e.Message}
 	}
 	if out == nil {
 		return nil

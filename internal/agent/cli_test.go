@@ -43,6 +43,23 @@ func TestClaudeParser(t *testing.T) {
 	}
 }
 
+// 后台任务列表变了：原样转给界面（还在跑的全部，空了就是都跑完了）
+func TestClaudeParserBackground(t *testing.T) {
+	evs, _ := parse(EngineClaude,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"渲染前 30 秒"}]}`,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`,
+	)
+	if len(evs) != 2 || evs[0].Type != "background" || evs[1].Type != "background" {
+		t.Fatal(types(evs))
+	}
+	if got := evs[0].Data.([]map[string]string); len(got) != 1 || got[0]["id"] != "b1" || got[0]["description"] != "渲染前 30 秒" {
+		t.Fatal(got)
+	}
+	if got := evs[1].Data.([]map[string]string); len(got) != 0 {
+		t.Fatal(got)
+	}
+}
+
 func TestCodexParser(t *testing.T) {
 	evs, res := parse(EngineCodex,
 		`{"type":"thread.started","thread_id":"th"}`,

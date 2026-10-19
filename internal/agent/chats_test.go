@@ -24,7 +24,7 @@ func TestCleanTitle(t *testing.T) {
 }
 
 func TestSetTitle(t *testing.T) {
-	a := &Agent{cfg: &config.Config{Dir: t.TempDir()}, chats: map[string]*chatSession{}}
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{Dir: t.TempDir()}, chats: map[string]*chatSession{}}
 	// 对话还没存：起名不新建文件（可能已经切到别的项目了）
 	if err := a.SetTitle("c1", "标题", "auto"); err == nil {
 		t.Fatal("对话不存在时应该报错")
@@ -49,7 +49,7 @@ func TestSetTitle(t *testing.T) {
 
 func TestAutoTitleOff(t *testing.T) {
 	dir := t.TempDir()
-	a := &Agent{cfg: &config.Config{Dir: dir}, chats: map[string]*chatSession{}}
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{Dir: dir}, chats: map[string]*chatSession{}}
 	msg, _ := json.Marshal(map[string]any{"id": "u1", "role": "user"})
 	a.SaveMessage("c1", msg, "你好", 1)
 	off := false
@@ -70,7 +70,7 @@ func TestAutoTitleOff(t *testing.T) {
 
 func TestInstructions(t *testing.T) {
 	dir := t.TempDir()
-	a := &Agent{cwd: dir}
+	a := &Agent{creght: &creghtModels{}, cwd: dir}
 	if a.instructions() != "" {
 		t.Fatal("没有 INSTRUCTIONS.md 时不该有这一节")
 	}

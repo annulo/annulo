@@ -922,10 +922,12 @@ func shellToolOps(cwd string, config shellToolConfig, sessionEnv sessionEnvFn, c
 	return agent.AgentTool{
 		Name:             config.name,
 		Label:            config.name,
-		Description:      fmt.Sprintf("Execute a %s command in the current working directory. Returns stdout and stderr. Output is truncated to last %d lines or %dKB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shellName, DefaultMaxLines, DefaultMaxBytes/1024),
+		Description:      fmt.Sprintf("Execute a %s command in the current working directory. Returns stdout and stderr. Output is truncated to last %d lines or %dKB (whichever is hit first). If truncated, full output is saved to a temp file. Always provide a short description of what the command does (shown to the user instead of the raw command). Optionally provide a timeout in seconds.", config.shellName, DefaultMaxLines, DefaultMaxBytes/1024),
 		PromptGuidelines: []string{piSessionEnvGuideline},
 		Parameters: ai.Object(
 			ai.Prop("command", ai.String("Shell command to execute")),
+			// Annulo：和 Claude Code 的 Bash 一样带一句说明，界面上优先显示它，展开才看命令
+			ai.Opt("description", ai.String("Always include this. Clear, concise description of what this command does, in 5-10 words, in the language the user is speaking. Shown to the user in place of the raw command, e.g. \"列出项目里的文件\" / \"Show git status\". Don't echo the command itself.")),
 			ai.Opt("timeout", ai.Number("Timeout in seconds (optional, no default timeout)")),
 		),
 		ConstrainedSampling: preferStrictToolSampling,

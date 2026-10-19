@@ -171,12 +171,19 @@ func (s *Server) apiTemplateGet(w http.ResponseWriter, r *http.Request) {
 			if need, err := wsgit.VersionMinAPI(ctx, *t, vs[0].No); err == nil {
 				res["requires"] = need
 			}
+			// 最新版要的插件版本、项目现在不够的：升级时会先装上、升上去（插件还没发那一版时升级会被拒绝）
+			if snap, err := wsgit.VersionDir(ctx, *t, vs[0].No); err == nil {
+				if needs := s.pluginNeeds(ctx, s.ws.Dir, snap); len(needs) > 0 {
+					res["plugin_needs"] = needs
+				}
+			}
 		}
 	}
 	writeJSON(w, res)
 }
 
-// apiTemplateRestore：{"files":[…]}。把这些文件换回模板：先换回项目基于的那一版（单独一个提交，能撤销），
+// apiTemplateRestore：{"files":[…]}。把这些文件换回模板：先换回项目基于的那一版（单独一个提交，能撤销；
+// 升级停在冲突上时换成要合进来的新版，舍弃项目里的改动，冲突都换掉了就完成合并，还剩冲突时 commit 是空的、result 是 conflict），
 // 有新版本就接着升级到最新（这些文件直接取新版，别的照常合并）；合并干净就推到预览。
 // 返回 {commit, files, result?（升级的结果）, upgrade_error?, push_error?, push_conflicts?}。
 func (s *Server) apiTemplateRestore(w http.ResponseWriter, r *http.Request) {
@@ -206,8 +213,18 @@ func (s *Server) apiTemplateRestore(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"commit": sha, "files": in.Files}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	s.installTemplatePlugins(ctx, s.ws.Dir, *t, 0) // 接着升级到最新版：合并之前先装上它要的插件
-	res, err := wsgit.Upgrade(ctx, s.ws.Dir, *t, 0)
+	// 恢复的是升级冲突里的一部分文件、还剩冲突：合并照旧停着，剩下的交给助手（不升级、不推送）
+	if merging, left := wsgit.Conflicts(s.ws.Dir); merging {
+		out["result"] = &wsgit.UpgradeResult{Status: "conflict", Conflicts: left}
+		writeJSON(w, out)
+		return
+	}
+	// 接着升级到最新版：合并之前先装上它要的插件、把版本不够的插件升上去；升不上去就先不升模板
+	var res *wsgit.UpgradeResult
+	_, err = s.installTemplatePlugins(ctx, s.ws.Dir, *t, 0)
+	if err == nil {
+		res, err = wsgit.Upgrade(ctx, s.ws.Dir, *t, 0)
+	}
 	if err != nil {
 		out["upgrade_error"] = err.Error() // 恢复已经做了，只是没升到最新（比如 Shuttle 太旧）
 	} else {
@@ -219,6 +236,36 @@ func (s *Server) apiTemplateRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		pushAfterMerge(ctx, s.ws.Dir, out)
 	}
+	writeJSON(w, out)
+}
+
+// apiTemplateTakeIncoming：{"files":[…]}（空是全部）。合并停在冲突上时（模板升级、装插件），冲突文件直接用要合进来的新版、
+// 舍弃项目的改动；冲突都没了就完成合并、推到预览。返回 {done, conflicts?（还剩的）, push_error?, push_conflicts?}。
+func (s *Server) apiTemplateTakeIncoming(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Files []string `json:"files"`
+	}
+	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	json.Unmarshal(b, &in)
+	if s.agent.Busy() {
+		fail(w, http.StatusConflict, i18n.New("运营助手正在执行，等它做完再处理冲突", "The assistant is working; wait until it finishes before handling the conflicts"))
+		return
+	}
+	done, err := wsgit.TakeIncoming(s.ws.Dir, in.Files)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	out := map[string]any{"done": done}
+	if !done {
+		_, out["conflicts"] = wsgit.Conflicts(s.ws.Dir)
+		writeJSON(w, out)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out["plugins"] = s.installProjectPlugins(ctx, s.ws.Dir)
+	pushAfterMerge(ctx, s.ws.Dir, out)
 	writeJSON(w, out)
 }
 
@@ -268,7 +315,12 @@ func (s *Server) apiTemplateUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	installed := s.installTemplatePlugins(ctx, s.ws.Dir, *t, in.To) // 合并之前装：有冲突时合并停在进行中就装不了了
+	// 合并之前装、升插件：有冲突时合并停在进行中就装不了了；插件升不到模板要的版本就不合并模板
+	installed, err := s.installTemplatePlugins(ctx, s.ws.Dir, *t, in.To)
+	if err != nil {
+		fail(w, http.StatusConflict, err)
+		return
+	}
 	res, err := wsgit.Upgrade(ctx, s.ws.Dir, *t, in.To)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)
@@ -330,7 +382,11 @@ func (s *Server) apiTemplateSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	installed := s.installTemplatePlugins(ctx, dir, to.wsgit(s.cfg.Dir), 0) // 合并之前装，理由同升级
+	installed, err := s.installTemplatePlugins(ctx, dir, to.wsgit(s.cfg.Dir), 0) // 合并之前装、升，理由同升级
+	if err != nil {
+		fail(w, http.StatusConflict, err)
+		return
+	}
 	res, err := wsgit.Switch(ctx, dir, *from, to.wsgit(s.cfg.Dir), 0)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)

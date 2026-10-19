@@ -7,7 +7,7 @@ import (
 )
 
 func TestRequestUserInputEndsTurn(t *testing.T) {
-	tool := (&Agent{}).requestUserInputTool()
+	tool := (&Agent{creght: &creghtModels{}}).requestUserInputTool()
 	ok := map[string]any{"title": "定位", "questions": []any{map[string]any{"id": "who", "type": "short_text", "label": "卖给谁"}}}
 	r, err := tool.Execute(context.Background(), "c1", ok, nil)
 	if err != nil || !r.Terminate || !strings.Contains(resultText(r), "waiting_for_user") {

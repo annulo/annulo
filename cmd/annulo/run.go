@@ -32,7 +32,7 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			base := fmt.Sprintf("http://%s/_shuttle/api/", cfg.Addr())
+			base := fmt.Sprintf("http://%s/_shuttle/api/", cfg.LocalAddr())
 			if len(args) == 0 {
 				return listFunctions(base)
 			}
@@ -64,6 +64,7 @@ func shuttleReq(method, url string, body any) (*http.Response, error) {
 	}
 	req, _ := http.NewRequest(method, url, r)
 	req.Header.Set("X-Shuttle", "1")
+	setProjectHeader(req)
 	req.Header.Set("content-type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader, LogOut } from 'lucide-react'
-import { post, type Status } from '@/lib/api'
+import { followProject, post, type Status } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
 
@@ -37,7 +37,9 @@ export function AccountMenu({ user, host, onLoggedOut }: { user: User; host: str
     try {
       const r = await post('login/logout')
       // 当前是在线项目：服务端换到了离线项目（或回到选项目），后台页面、标签都是旧项目的，整页刷新
-      if (((await r.json()) as { switched?: boolean }).switched) location.reload()
+      if (((await r.clone().json()) as { switched?: boolean }).switched) {
+        if (!(await followProject(r))) location.reload()
+      }
       else onLoggedOut()
     } catch (e) {
       setErr((e as Error).message)

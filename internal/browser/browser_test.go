@@ -15,6 +15,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"os/exec"
 )
 
 // 测试用的页面：普通输入框、富文本编辑器、按文字点的按钮、会发 fetch 的按钮、文件上传。
@@ -297,5 +298,94 @@ func TestProfileID(t *testing.T) {
 	os.Rename(filepath.Join(m.Dir, "x-1"), filepath.Join(moved.Dir, "x-1"))
 	if got, _ := moved.ProfileID("x-1"); got != id {
 		t.Fatalf("id 跟着 profile 目录走：%q → %q", id, got)
+	}
+}
+
+// 按项目分开：项目第一次用到一个名字时把老位置（几个项目共用的 <Dir>/<名字>）挪过来，别的项目再用是新的空浏览器
+func TestProfilePerProject(t *testing.T) {
+	m := NewManager(t.TempDir(), nil)
+	os.MkdirAll(filepath.Join(m.Dir, "facebook-1"), 0o700)
+	old, _ := m.ProfileID("facebook-1")
+	if got, _ := m.ProfileID("proj-a/facebook-1"); got != old {
+		t.Fatalf("A 项目第一次用要拿到老的登录态：%q → %q", old, got)
+	}
+	if _, err := os.Stat(filepath.Join(m.Dir, "facebook-1")); !os.IsNotExist(err) {
+		t.Fatal("老位置要挪走")
+	}
+	if got, _ := m.ProfileID("proj-b/facebook-1"); got != "" {
+		t.Fatalf("B 项目是新的空浏览器：%q", got)
+	}
+	if _, err := m.ProfileID("a/b/facebook-1"); err == nil {
+		t.Fatal("只能有一层项目")
+	}
+}
+
+// 页面挂了 beforeunload（编辑器里有没保存的内容）：跳转时自动点「离开」，不卡到超时
+func TestLeaveSitePrompt(t *testing.T) {
+	needChrome(t)
+	srv := testServer(t)
+	m := NewManager(t.TempDir(), nil)
+	ctx := context.Background()
+	p, err := m.Open(Options{Profile: "t5", URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if _, err := p.Eval(ctx, `window.addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = '' }), true`); err != nil {
+		t.Fatal(err)
+	}
+	// Chrome 只在用户和页面交互过以后才弹这个框：先真的点一下
+	if err := p.Click(ctx, "#name", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := p.Goto(ctx, srv.URL+"/next", "", 10*time.Second); err != nil {
+		t.Fatalf("跳转被「离开此网站？」卡住：%v", err)
+	}
+	if u, _ := p.URL(ctx); !strings.HasSuffix(u, "/next") || time.Since(start) > 8*time.Second {
+		t.Fatalf("没跳过去或太慢：%s %s", u, time.Since(start))
+	}
+}
+
+// 上次 Annulo 重启、崩溃时留下的 Chrome 还占着账号目录：再打开这个账号时先关掉它，
+// 不然启动不了，或者被转进旧实例、在里面多开一个谁都管不着的空白窗口（2026-10-19）
+func TestOpenKillsLeftoverChrome(t *testing.T) {
+	needChrome(t)
+	m := NewManager(t.TempDir(), nil)
+	m.Quiet = true // 不在屏幕上弹窗口
+	dir := m.profileDir("left")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := exec.Command(FindChrome(), "--headless=new", "--user-data-dir="+dir, "--no-first-run", "--remote-debugging-port=0", "about:blank")
+	if err := old.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer old.Process.Kill()
+	time.Sleep(2 * time.Second)
+	p, err := m.Open(Options{Profile: "left", Offscreen: true})
+	if err != nil {
+		t.Fatalf("有旧的 Chrome 占着目录时应该关掉它再打开：%v", err)
+	}
+	defer p.Close()
+	done := make(chan error, 1)
+	go func() { done <- old.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("旧的 Chrome 还在")
+	}
+	infos, err := chromedp.Targets(p.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := 0
+	for _, i := range infos {
+		if i.Type == "page" {
+			pages++
+		}
+	}
+	if pages != 1 {
+		t.Fatalf("新浏览器里应该只有一个页面：%d", pages)
 	}
 }

@@ -162,3 +162,26 @@ export function publish() {}`)
 		t.Fatal("同一个函数既 cloud 又 remote 应该报错")
 	}
 }
+
+func TestIsReadonly(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "stats.ts", `export const readonly = ['count']
+export const cloud = ['list']
+export function count() { return 1 }
+export function list() { return [] }
+export function publish() { return 0 }`)
+	for fn, want := range map[string]bool{"stats.count": true, "stats.list": true, "stats.publish": false, "nodot": false} {
+		if got, _ := IsReadonly(dir, fn); got != want {
+			t.Errorf("%s → %v，要 %v", fn, got, want)
+		}
+	}
+	write(t, dir, "pub.ts", `export const remote = ['publish', 'judge']
+export const node = ['publish']
+export function publish() { return 1 }
+export function judge() { return 2 }`)
+	for fn, want := range map[string]bool{"pub.publish": true, "pub.judge": false} {
+		if got, _ := IsNode(dir, fn); got != want {
+			t.Errorf("node：%s → %v，要 %v（只看 node，不看 remote）", fn, got, want)
+		}
+	}
+}

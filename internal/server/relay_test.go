@@ -33,7 +33,7 @@ func TestRelayOtherProject(t *testing.T) {
 	})
 	writeProject(t, filepath.Join(root, "backends", "pc"), "pc/sc", "https://creght.com", nil)
 
-	s := &Server{cfg: &config.Config{Dir: root}, ws: &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}}
+	s := newTestServer(&config.Config{Dir: root}, &creght.Workspace{Dir: a, ProjectID: "pa", SiteID: "sa", APIHost: "https://creght.cn"}, nil)
 	s.ready.Store(true)
 	s.creght = creght.NewClient(s.ws.APIHost)
 

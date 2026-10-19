@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Cloud, ExternalLink, FolderOpen, LayoutTemplate, Link2, Loader2, MonitorSmartphone, Sparkles, X } from 'lucide-react'
 import { useTheme } from '@/lib/theme'
 import BackendPicker from '@/components/BackendPicker'
@@ -55,7 +56,8 @@ const BENEFITS = [
 /** 连接 creght 的弹窗：连上多出什么、选集群、去浏览器授权（连上后整页刷新）。 */
 export function ConnectDialog({ onClose }: { onClose: () => void }) {
   const { connect, waiting, url, err } = useCreghtConnect()
-  return (
+  // 挂到 body 上：顶栏里的入口外面套着 translate（AppMenu），fixed 会相对那一层定位，弹窗被压成一条
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div role="dialog" aria-modal="true" aria-label={t('连接 creght')} className="flex max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
@@ -100,6 +102,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

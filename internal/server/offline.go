@@ -21,6 +21,7 @@ import (
 	"github.com/annulo/annulo/internal/brand"
 	"github.com/annulo/annulo/internal/creght"
 	"github.com/annulo/annulo/internal/i18n"
+	"github.com/annulo/annulo/internal/localdb"
 	"github.com/annulo/annulo/internal/wsgit"
 )
 
@@ -177,7 +178,9 @@ func (s *Server) deleteOffline(projectID, name string) error {
 	return nil
 }
 
+// moveToTrash 把删掉的项目挪进回收站；它连的外部账号（授权）直接删，不留在回收站里
 func (s *Server) moveToTrash(projectID string) {
+	s.conns.RemoveProject(projectID)
 	trash := filepath.Join(s.cfg.Dir, "trash", projectID+"-"+time.Now().Format("20060102-150405"))
 	for name, dir := range map[string]string{"backend": s.cfg.DirFor(projectID), "workspace": filepath.Join(s.cfg.Dir, "workspaces", projectID)} {
 		if _, err := os.Stat(dir); err != nil {
@@ -279,6 +282,10 @@ var localAssetRe = regexp.MustCompile(`(?:https?://(?:127\.0\.0\.1|localhost):\d
 //  3. 项目目录挪到 backends/<新 id>，换上 .creght，本机的文件推上去（以本机为准）；对话历史、日志跟着挪；
 //  4. 切到新项目。本机的 SQLite 留在回收站。不能转回离线。
 func (s *Server) apiGoOnline(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Server { // 服务端部署没有在线项目：项目数据都在这台服务器上（docs/server-and-multi-project.md 已定第 5 条）
+		fail(w, http.StatusBadRequest, i18n.New("服务器上的项目不用转：数据已经在服务器上，手机、同事直接打开这个网址就行", "Projects on a server don't need converting: the data is already on the server, so phones and teammates can just open this address"))
+		return
+	}
 	if !s.ready.Load() || !s.ws.Offline {
 		fail(w, http.StatusBadRequest, i18n.New("当前项目不是离线项目", "The current project isn't offline"))
 		return
@@ -300,7 +307,8 @@ func (s *Server) apiGoOnline(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "project_id": ws.ProjectID, "log": steps, "assets_failed": failed})
+	s.rememberProject(w, ws.ProjectID)
+	writeJSON(w, map[string]any{"ok": true, "project_id": ws.ProjectID, "project_url": s.projectURLFor(r, ws.ProjectID), "log": steps, "assets_failed": failed})
 }
 
 // failed 收集没传上去的本机文件（转换照常完成，回报给用户重新上传）。
@@ -406,8 +414,8 @@ func (s *Server) goOnline(ctx context.Context, host string, failed *[]assetFailu
 		step("项目文件已经推到 creght")
 	}
 
-	// 对话、日志、快照跟着新 id；本机的 SQLite 挪进回收站
-	for _, d := range []string{"workspaces", filepath.Join("logs", "local"), "snapshots"} {
+	// 对话、日志、快照、连接跟着新 id；本机的 SQLite 挪进回收站
+	for _, d := range []string{"workspaces", filepath.Join("logs", "local"), "snapshots", filepath.Join("connections", "projects")} {
 		from, to := filepath.Join(s.cfg.Dir, d, old.ProjectID), filepath.Join(s.cfg.Dir, d, pid)
 		if _, err := os.Stat(from); err == nil {
 			os.MkdirAll(filepath.Dir(to), 0o700)
@@ -434,8 +442,8 @@ func (s *Server) goOnline(ctx context.Context, host string, failed *[]assetFailu
 		s.cfg.Creght = host
 	}
 	s.cfg.Save()
-	s.agent.SetWorkspace(ws.ProjectID, ws.Dir)
-	s.Attach(ws)
+	s.Detach() // 老的离线项目 id 不用了；新 id 的项目重新打开（界面跳到它的地址）
+	s.activate(ws)
 	step("已切到在线项目 %s", ws.ProjectID)
 	return ws, steps, nil
 }
@@ -559,4 +567,12 @@ func ensureIgnore(file, line string) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// openLocalData 打开项目存在 Annulo 这边的业务表：配了 DATABASE_URL（服务端部署）存 Postgres，否则是本机的 SQLite 文件。
+func (s *Server) openLocalData(pid string) (*localdb.DB, error) {
+	if s.cfg.DatabaseURL != "" {
+		return localdb.OpenPostgres(s.cfg.DatabaseURL, pid)
+	}
+	return localdb.Open(s.offlineDBPath(pid))
 }

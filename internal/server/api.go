@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/annulo/annulo/internal/agent"
 	"github.com/annulo/annulo/internal/brand"
+	"github.com/annulo/annulo/internal/browser"
 	"github.com/annulo/annulo/internal/i18n"
 
 	"github.com/annulo/annulo/internal/creght"
@@ -23,6 +24,18 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(brand.Header, version.Version) // 页面靠它判断在不在 App 里
 	w.Header().Set(brand.HeaderNew, version.Version)
 	p := strings.TrimPrefix(r.URL.Path, "/_shuttle/api/")
+	if err := s.authorize(r, p); err != nil { // 服务端部署按角色限制（authz.go）
+		fail(w, http.StatusForbidden, err)
+		return
+	}
+	if s.cfg.Server && strings.HasPrefix(p, "settings/mcp") && r.Method != http.MethodGet {
+		// 远程 MCP 的 OAuth 回调：服务端部署按这次请求的地址算（https 域名或本机地址），算不出来就不发起授权
+		s.mcp.CallbackURL = s.callbackURL(r)
+	}
+	if rest, ok := strings.CutPrefix(p, "auth/"); ok {
+		s.handleAuth(w, r, rest)
+		return
+	}
 	// 还没有运营后台时只开放：状态、初始化、设置（模型 / MCP / skill）、用量
 	if !s.ready.Load() && p != "status" && !strings.HasPrefix(p, "setup") && !strings.HasPrefix(p, "login") && !strings.HasPrefix(p, "settings/") && p != "usage" {
 		w.Header().Set("content-type", "application/json; charset=utf-8")
@@ -55,6 +68,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiTemplateUpgrade(w, r)
 	case p == "template/restore" && r.Method == http.MethodPost:
 		s.apiTemplateRestore(w, r)
+	case p == "template/take-incoming" && r.Method == http.MethodPost:
+		s.apiTemplateTakeIncoming(w, r)
 	case p == "template/restore/undo" && r.Method == http.MethodPost:
 		s.apiTemplateRestoreUndo(w, r)
 	case p == "plugins" || strings.HasPrefix(p, "plugins/"):
@@ -71,12 +86,38 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiTemplateSourceRemove(w, r)
 	case p == "settings/creght" && r.Method == http.MethodGet:
 		s.apiCreghtClusterGet(w, r)
+	case p == "settings/creght/token" && r.Method == http.MethodPost:
+		s.apiCreghtToken(w, r)
+	case p == "settings/creght/custom" && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		s.apiCreghtCustom(w, r)
 	case p == "settings/creght" && r.Method == http.MethodPut:
 		s.apiCreghtClusterSet(w, r)
 	case p == "settings/offline" && r.Method == http.MethodPut:
 		s.apiOfflineMode(w, r)
 	case p == "setup/online" && r.Method == http.MethodPost:
 		s.apiGoOnline(w, r)
+	case p == "settings/browser" && r.Method == http.MethodGet:
+		writeJSON(w, s.browserSettings())
+	case p == "settings/browser/revoke" && r.Method == http.MethodPost:
+		s.apiBrowserRevoke(w, r)
+	case p == "settings/browser/chrome" && r.Method == http.MethodPost:
+		if err := browser.LaunchUserChrome(); err != nil {
+			fail(w, http.StatusBadRequest, i18n.New("没找到 Chrome：请先安装 Google Chrome", "Chrome not found: please install Google Chrome first"))
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	case p == "settings/domain" || strings.HasPrefix(p, "settings/domain/"):
+		s.apiDomain(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "settings/domain"), "/"))
+	case p == "settings/version" && r.Method == http.MethodGet:
+		s.apiServerVersion(w, r)
+	case p == "settings/node" && (r.Method == http.MethodGet || r.Method == http.MethodPut) && s.nodeClient != nil:
+		s.apiNodeSettings(w, r)
+	case p == "nodes" || strings.HasPrefix(p, "nodes/"):
+		s.apiNodes(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "nodes"), "/"))
+	case p == "settings/remote/tunnel" && (r.Method == http.MethodGet || r.Method == http.MethodPut) && s.tunnel != nil:
+		s.apiRemoteTunnel(w, r)
+	case (p == "remote/devices" || strings.HasPrefix(p, "remote/devices/")) && s.tunnel != nil:
+		s.apiRemoteDevices(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "remote/devices"), "/"))
 	case p == "settings/remote" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		s.apiRemoteSettings(w, r)
 	case p == "settings/language" && r.Method == http.MethodPut:
@@ -215,22 +256,68 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiLocalFileUpload(w, r)
 	case strings.HasPrefix(p, "local/files/") && r.Method == http.MethodDelete:
 		s.apiLocalFileDelete(w, strings.TrimPrefix(p, "local/files/"))
+	case p == "local/media" && r.Method == http.MethodPost:
+		s.apiChatMedia(w, r)
+	case p == "refs/resolve" && r.Method == http.MethodPost:
+		s.apiRefsResolve(w, r)
+	case p == "local/open" && r.Method == http.MethodPost:
+		s.apiChatMediaOpen(w, r)
 	case p == "local/ask" && r.Method == http.MethodPost:
 		s.apiLocalAsk(w, r)
 	case p == "local/run" && r.Method == http.MethodPost:
 		s.apiLocalRun(w, r)
 	case p == "local/logs" && r.Method == http.MethodGet:
 		s.apiRunLogs(w, r)
+	case p == "local/render/reset" && r.Method == http.MethodPost:
+		// 顶栏「刷新页面」：清掉本地渲染的编译缓存、重新构建，再刷新后台页面
+		if s.site != nil {
+			s.site.Reset(r.Context())
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	case p == "local/browsers" && r.Method == http.MethodGet:
+		s.apiLocalBrowsers(w, r)
+	case strings.HasPrefix(p, "local/runs/") && strings.HasSuffix(p, "/show") && r.Method == http.MethodPost:
+		s.apiLocalShow(w, r, strings.TrimSuffix(strings.TrimPrefix(p, "local/runs/"), "/show"))
 	case strings.HasPrefix(p, "local/runs/") && strings.HasSuffix(p, "/abort") && r.Method == http.MethodPost:
 		s.apiLocalAbort(w, strings.TrimSuffix(strings.TrimPrefix(p, "local/runs/"), "/abort"))
 	case p == "local/tasks" || strings.HasPrefix(p, "local/tasks/"):
 		s.apiTasks(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "local/tasks"), "/"))
+	case p == "settings/subscription" && r.Method == http.MethodGet:
+		s.apiSubscription(w, r)
+	case p == "local/inboxes" || strings.HasPrefix(p, "local/inboxes/"):
+		s.apiInboxes(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "local/inboxes"), "/"))
 	case p == "local/schedules" || strings.HasPrefix(p, "local/schedules/"):
 		s.apiSchedules(w, r, strings.TrimPrefix(strings.TrimPrefix(p, "local/schedules"), "/"))
 	case p == "settings/connections" && r.Method == http.MethodGet:
-		writeJSON(w, map[string]any{"list": s.conns.List()})
+		// 连接按项目分开（Google、Facebook…）：列的是当前项目的；creght 账号整台电脑共用，另走 settings/creght
+		writeJSON(w, map[string]any{"list": s.conns.List(s.connProject())})
+	case strings.HasPrefix(p, "settings/connections/") && strings.HasSuffix(p, "/client") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+		// 这种连接用的 OAuth 客户端（服务端部署在页面上配自己的，AGENTS.md「服务端部署：配置都在页面上」）
+		key := strings.TrimSuffix(strings.TrimPrefix(p, "settings/connections/"), "/client")
+		if r.Method == http.MethodPut {
+			var in struct{ ClientID, ClientSecret string }
+			if err := readJSON(r, &in); err != nil {
+				fail(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := s.conns.SetClient(key, in.ClientID, in.ClientSecret); err != nil {
+				fail(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		id, custom, ok := s.conns.Client(key)
+		if !ok {
+			fail(w, http.StatusNotFound, i18n.Errorf("没有这种连接：%s", "No such connection: %s", key))
+			return
+		}
+		writeJSON(w, map[string]any{"client_id": id, "custom": custom, "redirect_uri": s.callbackURL(r)})
 	case strings.HasPrefix(p, "settings/connections/") && strings.HasSuffix(p, "/connect") && r.Method == http.MethodPost:
-		u, err := s.conns.Start(strings.TrimSuffix(strings.TrimPrefix(p, "settings/connections/"), "/connect"), s.mcp.CallbackURL)
+		cb := s.callbackURL(r)
+		if cb == "" {
+			fail(w, http.StatusBadRequest, errNeedHTTPS)
+			return
+		}
+		u, err := s.conns.Start(s.connProject(), strings.TrimSuffix(strings.TrimPrefix(p, "settings/connections/"), "/connect"), cb)
 		if err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return
@@ -238,11 +325,11 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"auth_url": u})
 	case strings.HasPrefix(p, "settings/connections/") && r.Method == http.MethodDelete:
 		// ?account= 只断开这一个账号，不给是这种连接的全部账号
-		if err := s.conns.Disconnect(strings.TrimPrefix(p, "settings/connections/"), r.URL.Query().Get("account")); err != nil {
+		if err := s.conns.Disconnect(s.connProject(), strings.TrimPrefix(p, "settings/connections/"), r.URL.Query().Get("account")); err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, map[string]any{"list": s.conns.List()})
+		writeJSON(w, map[string]any{"list": s.conns.List(s.connProject())})
 	case p == "settings/secrets" && r.Method == http.MethodGet:
 		// needed：本机函数里用到的密钥名，设置页据此提示还缺哪个
 		writeJSON(w, map[string]any{"list": s.secrets.List(s.secretNamesInUse()...), "needed": s.secretNamesInUse()})
@@ -305,8 +392,16 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	s.agent.RefreshCreghtModels(r.Context(), false)
 	llm, llmErr := s.agent.LLM()
 	st := map[string]any{
-		"version": version.Version,
-		"agent":   map[string]any{"busy": s.agent.Busy(), "running": s.agent.RunningChats()},
+		"server":     s.cfg.Server,                                     // 服务端部署：界面显示账号、按角色收起助手和设置（authz.go）
+		"remote":     remoteOf(r) != nil,                               // 经隧道远程打开的（remote.go）：界面收起只在电脑上能用的东西
+		"creght_pat": s.cfg.Server && creght.Has(s.loginHost(), "pat"), // 服务器上连 creght 用个人令牌（平台支持时）
+		// creght_oauth：能不能用账号授权（OAuth）连：本机版总能；服务端部署要 https 域名或用 localhost 打开（授权方只认这两种回调）
+		"creght_oauth": s.callbackURL(r) != "",
+		"user":         userOf(r.Context()),
+		"cert":         s.certWarning(r),  // 服务端部署：证书签不下来、快到期、还没绑域名（domain.go）
+		"update":       s.updateNotice(r), // 服务端部署：官网有新版本（serverupdate.go）
+		"version":      version.Version,
+		"agent":        map[string]any{"busy": s.agent.Busy(), "running": s.agent.RunningChats(), "running_all": s.root.AllRunningChats()}, // running_all：所有打开着的项目（退出 App 前确认）
 		// language：设置里的选择（auto / zh / en）；locale：生效的界面语言（zh / en），外壳、左侧后台、助手都用它
 		"language": s.agent.LanguagePref(),
 		"locale":   s.agent.Locale(),
@@ -334,7 +429,10 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	st["creght"] = cr
 	st["offline_mode"] = s.cfg.Offline
-	st["git"] = map[string]any{"ok": wsgit.Available() == nil, "error": errString(wsgit.Available())}
+	if r.URL.Query().Get("recheck_git") == "1" { // 界面上「重新检测」：用户刚装完 git
+		wsgit.Recheck()
+	}
+	st["git"] = map[string]any{"ok": wsgit.Available() == nil, "error": errString(wsgit.Available()), "windows": runtime.GOOS == "windows"}
 	if !s.ready.Load() {
 		st["setup_required"] = true
 		writeJSON(w, st)
@@ -351,14 +449,11 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 		"site_id":     s.ws.SiteID,
 		"dir":         s.ws.Dir,
 		"preview_url": s.preview,
-		"editor_url":  fmt.Sprintf("%s/teditor/project/%s/site/%s", s.ws.APIHost, s.ws.ProjectID, s.ws.SiteID),
 		"offline":     s.ws.Offline,
 	}
 	if s.ws.Offline {
-		b := st["backend"].(map[string]any)
-		b["editor_url"] = ""
 		if p, err := creght.ReadOffline(s.ws.Dir); err == nil {
-			b["name"] = p.Name
+			st["backend"].(map[string]any)["name"] = p.Name
 		}
 	}
 	writeJSON(w, st)

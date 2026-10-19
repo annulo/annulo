@@ -36,7 +36,7 @@ func TestImageProxy(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	s := &Server{cfg: &config.Config{Dir: t.TempDir()}}
+	s := newTestServer(&config.Config{Dir: t.TempDir()}, nil, nil)
 	get := func(target string, h map[string]string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/_shuttle/img?url="+url.QueryEscape(target), nil)
 		// 浏览器在 localhost 页面里请求图片时会带上这个 Referer，代理不能把它转发出去

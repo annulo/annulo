@@ -1,0 +1,135 @@
+<!doctype html>
+<!-- 商店截图：render.sh 用 Chrome 无头模式按 ?shot=<n>&lang=<en|zh> 渲染成 1280×800（shot=tile 是 440×280 的宣传小图）。
+     插件的窗口照 extension/ui.css 和 grant.html / popup.html 的结构画，文案和插件里的一样 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fg: #141210; --muted: #6b6560; --line: #e6e3d8; --bg: #fbfaf4; --brand: #b05a36; --paper: #f3f0e6; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif; color: var(--fg); background: var(--paper); overflow: hidden; }
+  .shot { width: 1280px; height: 800px; display: grid; grid-template-columns: 430px 1fr; gap: 40px; padding: 64px 56px 0 72px; position: relative; overflow: hidden; }
+  .copy { padding-top: 70px; }
+  .mark { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+  .mark img { width: 34px; height: 34px; border-radius: 8px; }
+  h1 { font-size: 40px; line-height: 1.15; margin: 34px 0 18px; letter-spacing: -.01em; }
+  .lead { font-size: 18px; color: #3d3833; margin: 0 0 26px; }
+  .points { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  .points li { display: flex; gap: 10px; font-size: 15.5px; color: #3d3833; }
+  .points li::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); margin-top: 8px; }
+  .stage { position: relative; }
+  /* Chrome 窗口 */
+  .win { position: absolute; background: #fff; border-radius: 12px; box-shadow: 0 30px 70px rgba(40,30,20,.18), 0 0 0 1px rgba(40,30,20,.08); overflow: hidden; }
+  .tabs { height: 38px; background: #dfe3e8; display: flex; align-items: flex-end; padding: 0 12px; gap: 8px; }
+  .dots { display: flex; gap: 7px; align-self: center; margin-right: 10px; }
+  .dots i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; } .dots i:nth-child(2) { background: #febc2e; } .dots i:nth-child(3) { background: #28c840; }
+  .tab { background: #fff; border-radius: 9px 9px 0 0; height: 30px; padding: 0 14px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 190px; }
+  .tab .fav { width: 14px; height: 14px; border-radius: 4px; background: #5b8def; }
+  .bar { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #e3e5e8; }
+  .url { flex: 1; height: 28px; border-radius: 14px; background: #f1f3f4; display: flex; align-items: center; padding: 0 14px; font-size: 13px; color: #3c4043; }
+  .ext { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; }
+  .ext.on { background: #e8eaed; }
+  .ext img { width: 18px; height: 18px; border-radius: 4px; }
+  .infobar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #f8f9fa; border-bottom: 1px solid #e3e5e8; font-size: 12.5px; color: #3c4043; }
+  .infobar b { font-weight: 600; }
+  .infobar .x { margin-left: auto; padding: 3px 12px; border: 1px solid #dadce0; border-radius: 6px; background: #fff; }
+  /* 被操作的网页（示意） */
+  .page { padding: 26px 34px; display: grid; gap: 14px; }
+  .q { justify-self: end; background: #eef1f6; border-radius: 14px; padding: 10px 14px; font-size: 14px; max-width: 70%; }
+  .a { display: grid; gap: 8px; max-width: 86%; }
+  .ln { height: 10px; border-radius: 5px; background: #eceef1; }
+  .cite { display: flex; gap: 8px; } .cite span { font-size: 11.5px; padding: 3px 9px; border-radius: 99px; background: #f1f3f4; color: #5f6368; }
+  .compose { margin-top: 6px; height: 46px; border-radius: 23px; border: 1px solid #dadce0; display: flex; align-items: center; padding: 0 18px; color: #9aa0a6; font-size: 13.5px; }
+  .cursor { position: absolute; width: 22px; height: 22px; }
+  /* 插件自己的界面：照 extension/ui.css */
+  .ui { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  .ui .muted { color: var(--muted); }
+  .ui button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; }
+  .ui button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .grant { padding: 28px; }
+  .grant img { width: 40px; height: 40px; border-radius: 9px; }
+  .grant h2 { font-size: 18px; margin: 14px 0 6px; }
+  .grant .site { font: 600 16px ui-monospace, Menlo, monospace; margin: 0 0 10px; }
+  .grant .who { margin: 0 0 10px; }
+  .grant p { margin: 0 0 10px; }
+  .grant .buttons { display: flex; gap: 8px; margin-top: 20px; }
+  .popup { width: 300px; padding: 14px 16px; border-radius: 10px; box-shadow: 0 18px 50px rgba(40,30,20,.22), 0 0 0 1px rgba(40,30,20,.1); position: absolute; }
+  .popup .head { display: flex; align-items: center; gap: 8px; }
+  .popup .head img { width: 20px; height: 20px; border-radius: 5px; }
+  .popup .badge { margin-left: auto; font-size: 12px; padding: 1px 8px; border-radius: 99px; background: #d8ebe8; color: #1f5e65; }
+  .popup p { margin: 8px 0 0; }
+  .popup h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  .popup ul { list-style: none; padding: 0; margin: 0; }
+  .popup li { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
+  .popup li button { padding: 2px 10px; font-size: 12px; }
+  .chromeask { position: absolute; width: 360px; background: #fff; border-radius: 10px; padding: 18px 20px; box-shadow: 0 18px 50px rgba(40,30,20,.25), 0 0 0 1px rgba(40,30,20,.1); font-size: 13.5px; }
+  .chromeask b { display: block; font-size: 14.5px; margin-bottom: 8px; }
+  .chromeask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .chromeask span { padding: 6px 14px; border-radius: 16px; border: 1px solid #dadce0; color: #1a73e8; }
+  .chromeask span.p { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  /* 宣传小图 */
+  .tile { width: 440px; height: 280px; background: var(--paper); padding: 30px 32px; position: relative; overflow: hidden; }
+  .tile .mark img { width: 30px; height: 30px; }
+  .tile h1 { font-size: 27px; margin: 22px 0 10px; }
+  .tile p { margin: 0; font-size: 14px; color: #3d3833; max-width: 300px; }
+  .tile .chip { position: absolute; right: 24px; bottom: 24px; background: var(--bg); border-radius: 10px; padding: 10px 14px; box-shadow: 0 12px 30px rgba(40,30,20,.18), 0 0 0 1px rgba(40,30,20,.08); font-size: 12.5px; display: grid; gap: 6px; width: 210px; }
+  .tile .chip div { display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 6px; }
+  .tile .chip div:first-child { border: 0; padding: 0; font-weight: 600; }
+  .tile .chip em { font-style: normal; font-size: 11px; padding: 0 7px; border-radius: 99px; background: #d8ebe8; color: #1f5e65; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const q = new URLSearchParams(location.search)
+const zh = q.get('lang') === 'zh'
+const shot = q.get('shot') || '1'
+const icon = '../extension/icons/icon-128.png'
+const T = zh ? {
+  s1: ['在你自己的 Chrome 里替你操作网页', '桌面应用 Annulo 用你在 Chrome 里已经登录好的账号做事，不用在另一个浏览器里重新登录。', ['只在它自己打开的窗口里操作，不碰你的其他标签页', '只和这台电脑上的 Annulo 连接，不经过任何服务器', '不读取、不修改你的 cookie']],
+  s2: ['网站一个一个授权', 'Annulo 第一次要用某个网站时，会先问你。你点了允许，它才能在这个网站上操作。', ['只授权这一个网站，不是所有网站', '页面离开允许的网站，插件就停止控制', '不允许也没关系，Annulo 照样能用自己的浏览器']],
+  s3: ['随时查看、随时移除', '点插件图标就能看到 Annulo 能操作哪些网站，不想让它用了就移除。', ['连接状态一眼看清', '移除后立刻生效，下次要用会重新问你', '需要安装 Annulo 桌面应用：annulo.dev']],
+  infobar: '“Annulo”已开始调试此浏览器', cancel: '取消',
+  q: '推荐几家做户外家具的工厂', compose: '有问题，尽管问',
+  grantTitle: 'Annulo 想在这个网站上帮你操作', note: '只在 Annulo 自己打开的窗口里操作，用的是你在这个 Chrome 里已经登录的账号。随时可以在插件图标的菜单里取消。', allow: '允许', deny: '不允许', who: '这是 Chrome 里的', profile: '工作',
+  why: '外贸助手要在这里检测 AI 搜索怎么介绍你的公司。',
+  askT: '“Annulo”请求获得以下权限：', askB: '读取和更改您在 chat.example.com 上的数据', askAllow: '允许', askDeny: '拒绝',
+  on: '已连接', onHint: 'Annulo 只会在以下您授权过的网站中操作。', sites: '允许的网站', remove: '移除',
+  tileT: '在你自己的 Chrome 里工作', tileP: '让 Annulo 用你已经登录的账号，在你允许的网站上替你操作。',
+} : {
+  s1: ['Let Annulo work in your own Chrome', 'The Annulo desktop app gets things done with the accounts you are already signed in to, with no second sign-in in another browser.', ['Works only in windows it opens itself, never your other tabs', 'Talks only to Annulo on this computer, no servers in between', 'Never reads or changes your cookies']],
+  s2: ['You allow sites one by one', 'The first time Annulo needs a website, it asks you. It can only work there after you click Allow.', ['Allows that one site, not every site', 'Leaving the allowed sites stops the extension', 'Prefer not to? Annulo still has its own browser']],
+  s3: ['See and remove sites any time', 'Click the extension icon to see which sites Annulo may work on, and remove any you no longer want.', ['Connection status at a glance', 'Removing takes effect at once; it asks again next time', 'Requires the Annulo desktop app: annulo.dev']],
+  infobar: '"Annulo" started debugging this browser', cancel: 'Cancel',
+  q: 'Recommend a few outdoor furniture factories', compose: 'Ask anything',
+  grantTitle: 'Annulo wants to work on this site for you', note: 'It only works in windows Annulo opens itself, signed in as you are in this Chrome. You can remove it any time from the extension menu.', allow: 'Allow', deny: "Don't allow", who: 'This is the Chrome profile', profile: 'Work',
+  why: 'Export assistant wants to check how AI search describes your company here.',
+  askT: '"Annulo" wants permission to:', askB: 'Read and change your data on chat.example.com', askAllow: 'Allow', askDeny: 'Deny',
+  on: 'Connected', onHint: "Annulo only works on the sites below that you've allowed.", sites: 'Allowed sites', remove: 'Remove',
+  tileT: 'Work in your own Chrome', tileP: 'Let Annulo act on the sites you allow, signed in as you already are.',
+}
+document.documentElement.lang = zh ? 'zh-CN' : 'en'
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const copy = ([h, lead, pts]) => `<div class="copy"><div class="mark"><img src="${icon}">Annulo</div><h1>${esc(h)}</h1><p class="lead">${esc(lead)}</p><ul class="points">${pts.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div>`
+const chrome = ({ x, y, w, h, url, info, extOn, body }) => `<div class="win" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">
+  <div class="tabs"><div class="dots"><i></i><i></i><i></i></div><div class="tab"><span class="fav"></span>${esc(url.split('/')[0])}</div></div>
+  <div class="bar"><div class="url">${esc(url)}</div><div class="ext ${extOn ? 'on' : ''}"><img src="${icon}"></div></div>
+  ${info ? `<div class="infobar"><span>ⓘ</span><b>${esc(T.infobar)}</b><span class="x">${esc(T.cancel)}</span></div>` : ''}
+  ${body}</div>`
+const chat = `<div class="page"><div class="q">${esc(T.q)}</div><div class="a"><div class="ln" style="width:92%"></div><div class="ln" style="width:84%"></div><div class="ln" style="width:88%"></div><div class="ln" style="width:60%"></div><div class="cite"><span>supplier-a.com</span><span>factory-b.cn</span><span>directory.example</span></div><div class="ln" style="width:90%;margin-top:6px"></div><div class="ln" style="width:72%"></div></div><div class="compose">${esc(T.compose)}</div></div>`
+const popup = (x, y) => `<div class="ui popup" style="left:${x}px;top:${y}px"><div class="head"><img src="${icon}"><b>Annulo</b><span class="badge">${esc(T.on)}</span></div><p class="muted">${esc(T.onHint)}</p><h3>${esc(T.sites)}</h3><ul>${['chat.example.com', 'search.example.net', 'shop.example.org', 'news.example.com'].map((s) => `<li><span>${s}</span><button>${esc(T.remove)}</button></li>`).join('')}</ul></div>`
+const grant = `<div class="ui grant" style="height:100%"><img src="${icon}"><h2>${esc(T.grantTitle)}</h2><p class="site">chat.example.com</p><p class="who">${esc(T.who)} <b>${esc(T.profile)}</b></p><p class="muted">${esc(T.why)}</p><p class="muted">${esc(T.note)}</p><div class="buttons"><button class="primary">${esc(T.allow)}</button><button>${esc(T.deny)}</button></div></div>`
+const root = document.getElementById('root')
+if (shot === 'tile') {
+  root.innerHTML = `<div class="tile"><div class="mark"><img src="${icon}">Annulo</div><h1>${esc(T.tileT)}</h1><p>${esc(T.tileP)}</p><div class="chip"><div><span>${esc(T.sites)}</span><em>${esc(T.on)}</em></div><div><span>chat.example.com</span></div><div><span>search.example.net</span></div></div></div>`
+} else if (shot === '1') {
+  root.innerHTML = `<div class="shot">${copy(T.s1)}<div class="stage">${chrome({ x: 0, y: 40, w: 682, h: 640, url: 'chat.example.com/', info: true, extOn: true, body: chat })}${popup(370, 162)}</div></div>`
+} else if (shot === '2') {
+  root.innerHTML = `<div class="shot">${copy(T.s2)}<div class="stage">${chrome({ x: 0, y: 40, w: 682, h: 640, url: 'chat.example.com/', info: false, extOn: false, body: chat })}<div class="win" style="left:100px;top:150px;width:480px;height:420px"><div class="tabs" style="height:30px;align-items:center"><div class="dots"><i></i><i></i><i></i></div><span style="font-size:12px;color:#5f6368">Annulo</span></div>${grant}</div><div class="chromeask" style="left:300px;top:480px"><b>${esc(T.askT)}</b>${esc(T.askB)}<div class="row"><span>${esc(T.askDeny)}</span><span class="p">${esc(T.askAllow)}</span></div></div></div></div>`
+} else {
+  root.innerHTML = `<div class="shot">${copy(T.s3)}<div class="stage">${chrome({ x: 0, y: 40, w: 682, h: 640, url: 'annulo.dev', info: false, extOn: true, body: '<div class="page"><div class="ln" style="width:40%;height:18px"></div><div class="ln" style="width:80%"></div><div class="ln" style="width:70%"></div></div>' })}<div style="position:absolute;left:150px;top:150px;transform:scale(1.35);transform-origin:top left">${popup(0, 0)}</div></div></div>`
+}
+</script>
+</body>
+</html>

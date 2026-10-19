@@ -2,7 +2,7 @@
 
 <h1 align="center">Annulo</h1>
 
-<p align="center"><b>A stash for what AI builds you.</b></p>
+<p align="center"><b>Build your own workbench.</b></p>
 
 AI is great at making things: a page, a script, a little tool, in a few sentences. Then the chat ends and the thing is gone. The page lived in a conversation, the script sits in your Downloads and won't run next week, the cloud app can't see the files and accounts on your computer.
 

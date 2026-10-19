@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Brain, Check, CheckCircle2, Eye, Loader2, MessageSquare, Pencil, Plus, RotateCw, Server, Trash2, XCircle } from 'lucide-react'
+import { Brain, Check, CheckCircle2, Eye, Loader2, Pencil, Plus, RotateCw, Server, Trash2, XCircle } from 'lucide-react'
 import { getJSON, normModelSettings, post, priceText, THINKING_LABEL, type ModelConfig, type ModelSettings, type ProviderConfig, type Thinking } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Segmented, Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { menuLabel } from '@/components/ModelMenu'
-import { BrandIcon, ModelIcon } from '@/lib/modelBrand'
+import { TaskModelPicker } from '@/components/ModelMenu'
+import { BrandIcon } from '@/lib/modelBrand'
 import { t } from '@/lib/i18n'
 
 const APIS = [
@@ -126,7 +126,6 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
   // 思考档位只列当前模型有的；选的档它没有时显示实际用的那档
   const activeLevels = active?.reasoning ? (active.thinking_levels ?? st.thinking_levels) : []
   const effective = st.thinking_effective ?? st.thinking
-  const providerName = (id: string) => st.providers.find((p) => p.id === id)?.name ?? t('（服务商已删除）')
   // 服务商被删了还留着的模型：单独一张卡片，能删
   const orphans = ownModels.filter((m) => !st.providers.some((p) => p.id === m.provider))
   const use = (id: string) => id !== st.active && act(() => post('settings/llm', { active: id }, 'PUT'))
@@ -233,36 +232,40 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-medium whitespace-nowrap">{t('对话自动起名')}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">{t('新对话发出第一句话后，让模型起一个短标题（不开思考，一次几十个 token）；关掉就用第一句话当标题。点对话标题随时可以改。')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t('新对话发出第一句话后，让模型起一个短标题（默认不开思考，一次几十个 token）；关掉就用第一句话当标题。点对话标题随时可以改。')}</p>
           </div>
           <Switch checked={st.auto_title} onChange={(v) => act(() => post('settings/llm', { auto_title: v }, 'PUT'))} label={t('对话自动起名')} />
         </div>
         {st.auto_title && (
           <div className="flex flex-wrap items-center gap-3">
-            <label htmlFor="title-model" className="text-xs text-muted-foreground">{t('起名用的模型')}</label>
-            <Select
-              id="title-model"
-              className="w-72 max-w-full"
-              title={t('起名用的模型')}
-              value={st.models.some((m) => m.id === st.title_model) ? st.title_model : ''}
-              onChange={(v) => act(() => post('settings/llm', { title_model: v }, 'PUT'))}
-              options={[
-                { value: '', label: t('跟对话用同一个'), sub: active ? t('现在是 {name}', { name: active.label }) : undefined, icon: <MessageSquare className="size-3.5" /> },
-                ...st.models
-                  .filter((m) => m.ready || m.id === st.title_model)
-                  // 大字是模型名，小字是服务商（模型 id 和名字不一样时补在后面；本机 agent 的 id 是别名，不显示）
-                  .map((m) => {
-                    const label = menuLabel(m)
-                    const provider = m.builtin ? t('creght 平台') : providerName(m.provider)
-                    return { value: m.id, label, sub: m.agent || m.model === label ? provider : `${provider} · ${m.model}`, icon: ModelIcon({ m }) }
-                  }),
-              ]}
-            />
+            <label className="text-xs text-muted-foreground">{t('起名用的模型')}</label>
+            <TaskModelPicker kind="title" st={st} onChanged={() => load()} />
           </div>
         )}
         {st.title_model && !st.models.some((m) => m.id === st.title_model) && (
           <p className="text-xs text-muted-foreground">{t('选过的起名模型已经不在了，现在跟对话用同一个模型。')}</p>
         )}
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-medium whitespace-nowrap">{t('浏览器助手')}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{t('发帖、采集这类浏览器自动操作由它看着页面完成：填表、处理弹窗、平台改了页面时自己找到新位置。要选会推理的模型（便宜的小模型常回乱、走不通），不思考也够用。')}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="text-xs text-muted-foreground">{t('浏览器助手用的模型')}</label>
+          <TaskModelPicker kind="browser" st={st} onChanged={() => load()} />
+        </div>
+        {st.browser_model && !st.models.some((m) => m.id === st.browser_model) && (
+          <p className="text-xs text-muted-foreground">{t('选过的浏览器助手模型已经不在了，现在跟对话用同一个模型。')}</p>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-medium">{t('记录每一步的详细过程')}</div>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t('调试用：把浏览器助手每一步看到的页面元素、模型的回复和用时写进这次运行的日志。日志会变大，平时不用开。')}</p>
+          </div>
+          <Switch checked={!!st.browser_debug} onChange={(v) => act(() => post('settings/llm', { browser_debug: v }, 'PUT'))} label={t('记录每一步的详细过程')} />
+        </div>
       </section>
 
       <section className="space-y-3">
@@ -442,9 +445,9 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                   <div key={a.id} className="flex items-start gap-3 border-b border-border px-4 py-3 last:border-b-0">
                     <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-bold">{a.name}</span>
+                      <span className="shrink-0 text-[13px] font-bold whitespace-nowrap">{a.name}</span>
                       {st.active.startsWith(a.model_id) && (
-                        <span className="rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary-text">{t('正在使用')}</span>
+                        <span className="shrink-0 rounded-md border border-primary/10 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap text-primary-text">{t('正在使用')}</span>
                       )}
                       <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{a.path}</span>
                     </div>
@@ -476,7 +479,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                       variant="ghost"
                       aria-label={t('重新读取 {name} 支持的模型', { name: a.name })}
                       title={t('重新读取 {name} 支持的模型', { name: a.name })}
-                      className="shrink-0 self-center text-muted-foreground"
+                      className="shrink-0 self-center text-muted-foreground max-sm:self-start"
                       disabled={refreshingAgents}
                       onClick={async () => {
                         setRefreshingAgents(true)
@@ -485,7 +488,7 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                     >
                       <RotateCw className={cn(refreshingAgents && 'animate-spin')} />
                     </Button>
-                    <div className="shrink-0 self-center">
+                    <div className="shrink-0 self-center max-sm:self-start max-sm:pt-1">
                       <Switch checked={!isOff(a.id)} onChange={(on) => toggle(a.id, on)} label={t('使用 {name}', { name: a.name })} />
                     </div>
                   </div>
@@ -494,8 +497,8 @@ export default function LLMSettings({ onSaved }: { onSaved: () => void }) {
                 <div key={a.id} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-bold">{a.name}</span>
-                      <span className="rounded-md bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{t('没装')}</span>
+                      <span className="shrink-0 text-[13px] font-bold whitespace-nowrap">{a.name}</span>
+                      <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap text-muted-foreground">{t('没装')}</span>
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">
                       {t('在终端里装好并登录，回到这里刷新：')} <code className="font-mono select-all">{a.install}</code>

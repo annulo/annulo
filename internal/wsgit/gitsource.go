@@ -26,6 +26,8 @@ import (
 //   - 模板站点（Template.Site、template 分支的「模板站点」trailer）写成 git:<仓库>#<子目录>，子目录可以没有；
 //   - 项目里记的模板版本是整数：semver 换算成 major*1000000 + minor*1000 + patch（v1.2.3 → 1002003），界面显示原来的 tag（Version.Label）；
 //   - 只认 vX.Y.Z / X.Y.Z，预发布（-beta.1）和别的 tag 不列；
+//   - 一个仓库放多个模板、插件时，每个子目录可以自己发版本：tag 写成 <子目录>/vX.Y.Z（像 Go 一个仓库多个 module），
+//     有这种 tag 的子目录只认它们，没有的用仓库的 vX.Y.Z（见 gitTags）；
 //   - 仓库镜像成一个 bare 仓库放在快照目录旁边（<Cache>.git），每次查版本 fetch 一次 tag；认证用本机 git 自己的（credential helper、SSH key），不弹输入框。
 
 // GitPrefix 是 git 模板站点的前缀。
@@ -89,7 +91,11 @@ func mirrorLock(dir string) func() {
 // gitRun 在 ctx 下跑 git，不弹认证输入框；出错时把 stderr 换成看得懂的话。
 func gitRun(ctx context.Context, repo string, args ...string) ([]byte, error) {
 	// Git for Windows 默认 core.autocrlf=true，git archive 会把模板文件改成 CRLF，和仓库里的不一样
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.autocrlf=false"}, args...)...)
+	bin, err := gitBin()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, append([]string{"-c", "core.autocrlf=false"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -143,12 +149,14 @@ func mirror(ctx context.Context, t Template) (string, error) {
 }
 
 type gitTag struct {
-	name, note, date string
+	name, note, date string // name 是完整的 tag 名（social/v0.8.0），git 命令用它
+	label            string // 去掉目录前缀的版本（v0.8.0），给人看
+	dir              string // 带目录前缀的 tag 的目录（social），不带前缀的是空
 	no               int
 }
 
-// gitTags 是镜像里的 semver tag，新的在前。
-func gitTags(ctx context.Context, repo, dir string) ([]gitTag, error) {
+// allTags 是镜像里全部的 semver tag：不带前缀的 vX.Y.Z，和一个仓库放多个模板、插件时每个目录自己的 <目录>/vX.Y.Z（像 Go 一个仓库多个 module），新的在前。
+func allTags(ctx context.Context, repo, dir string) ([]gitTag, error) {
 	out, err := gitRun(ctx, repo, "--git-dir="+dir, "for-each-ref", "refs/tags", "--format=%(refname:strip=2)%00%(creatordate:iso-strict)%00%(contents)%00%00")
 	if err != nil {
 		return nil, err
@@ -159,7 +167,11 @@ func gitTags(ctx context.Context, repo, dir string) ([]gitTag, error) {
 		if len(f) < 3 {
 			continue
 		}
-		no, ok := SemverNo(f[0])
+		d, label := "", f[0]
+		if i := strings.LastIndex(f[0], "/"); i >= 0 {
+			d, label = f[0][:i], f[0][i+1:]
+		}
+		no, ok := SemverNo(label)
 		if !ok {
 			continue
 		}
@@ -167,25 +179,60 @@ func gitTags(ctx context.Context, repo, dir string) ([]gitTag, error) {
 		if i := strings.Index(note, "-----BEGIN PGP SIGNATURE-----"); i >= 0 {
 			note = note[:i]
 		}
-		tags = append(tags, gitTag{name: f[0], date: f[1], note: strings.TrimSpace(note), no: no})
+		tags = append(tags, gitTag{name: f[0], label: label, dir: d, date: f[1], note: strings.TrimSpace(note), no: no})
 	}
 	sort.Slice(tags, func(i, j int) bool { return tags[i].no > tags[j].no })
 	return tags, nil
 }
 
+// gitTags 是子目录 sub 的版本，新的在前：有 <sub>/vX.Y.Z 的 tag 就用这些（这个目录自己发版本），
+// 加上仓库的 vX.Y.Z 里比它自己最早一版还低的（改成自己打 tag 之前的历史：装着老版本的项目升级要拿老版本的文件做三方合并）；
+// 没有就用仓库的 vX.Y.Z（整个仓库一个版本：公开模板仓库、老的插件仓库）。
+func gitTags(ctx context.Context, repo, dir, sub string) ([]gitTag, error) {
+	all, err := allTags(ctx, repo, dir)
+	if err != nil {
+		return nil, err
+	}
+	var own, bare []gitTag
+	for _, g := range all {
+		switch {
+		case sub != "" && g.dir == sub:
+			own = append(own, g)
+		case g.dir == "":
+			bare = append(bare, g)
+		}
+	}
+	if len(own) == 0 {
+		return bare, nil
+	}
+	first := own[len(own)-1].no
+	for _, g := range bare {
+		if g.no < first {
+			own = append(own, g)
+		}
+	}
+	return own, nil
+}
+
 func versionsGit(ctx context.Context, t Template) ([]Version, error) {
-	repo, _ := ParseGitSite(t.Site)
+	repo, sub := ParseGitSite(t.Site)
 	dir, err := mirror(ctx, t)
 	if err != nil {
 		return nil, err
 	}
-	tags, err := gitTags(ctx, repo, dir)
+	tags, err := gitTags(ctx, repo, dir, sub)
 	if err != nil {
 		return nil, err
 	}
 	vs := make([]Version, 0, len(tags))
 	for _, g := range tags {
-		vs = append(vs, Version{No: g.no, Label: g.name, Note: g.note, CreatedAt: g.date})
+		vs = append(vs, Version{No: g.no, Label: g.label, Note: g.note, CreatedAt: g.date})
+	}
+	// 升级说明按语言从最新一版的 changelog.yaml 取（见 changelog.go），没有这个文件就用 tag 的说明
+	if len(tags) > 0 {
+		if body, err := gitRun(ctx, repo, "--git-dir="+dir, "show", "refs/tags/"+tags[0].name+"^{commit}:"+path.Join(sub, changelogFile)); err == nil {
+			localizeNotes(vs, parseChangelog(body, SemverNo))
+		}
 	}
 	return vs, nil
 }
@@ -197,7 +244,7 @@ func filesGit(ctx context.Context, t Template, n int) (map[string]string, error)
 	if err != nil {
 		return nil, err
 	}
-	tags, err := gitTags(ctx, repo, dir)
+	tags, err := gitTags(ctx, repo, dir, sub)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +307,7 @@ func GitMeta(ctx context.Context, t Template) (TemplateMeta, error) {
 	if err != nil {
 		return meta, err
 	}
-	tags, err := gitTags(ctx, repo, dir)
+	tags, err := gitTags(ctx, repo, dir, sub)
 	if err != nil || len(tags) == 0 {
 		return meta, err
 	}
@@ -312,7 +359,8 @@ func localized(raw json.RawMessage) [2]string {
 }
 
 // CatalogDirs 列出一个仓库最新一版（semver tag）里有 marker 文件的一级子目录：仓库里放了多个模板（或插件）时，
-// 每个子目录就是一个（github.com/annulo/templates 的 blank/、creator/；annulo/plugins 的 social/）。
+// 每个子目录就是一个（github.com/annulo/templates 的 blank/、creator/；annulo/plugins 的 social/、docs/）。
+// 自己发版本的目录（有 <目录>/vX.Y.Z 的 tag）看它自己最新的 tag，别的看仓库最新的 vX.Y.Z。
 // t.Site 写仓库本身（git:<仓库>，不带子目录）；markers 任一个在子目录里就算（annulo.json 或老的 shuttle.json）。
 func CatalogDirs(ctx context.Context, t Template, markers ...string) ([]string, error) {
 	repo, _ := ParseGitSite(t.Site)
@@ -320,26 +368,61 @@ func CatalogDirs(ctx context.Context, t Template, markers ...string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	tags, err := gitTags(ctx, repo, dir)
+	tags, err := allTags(ctx, repo, dir)
 	if err != nil {
 		return nil, err
 	}
-	if len(tags) == 0 {
-		return nil, i18n.Errorf("仓库 %s 还没有发过版本（vX.Y.Z 的 tag）", "Repository %s has no versions yet (vX.Y.Z tags)", repo)
+	own := map[string]string{} // 目录 → 它自己最新的 tag
+	bare := ""
+	for _, g := range tags {
+		if g.dir == "" && bare == "" {
+			bare = g.name
+		} else if g.dir != "" && !strings.Contains(g.dir, "/") && own[g.dir] == "" {
+			own[g.dir] = g.name
+		}
 	}
-	out, err := gitRun(ctx, repo, "--git-dir="+dir, "ls-tree", "-r", "--name-only", "refs/tags/"+tags[0].name+"^{commit}")
-	if err != nil {
-		return nil, err
+	if bare == "" && len(own) == 0 {
+		return nil, i18n.Errorf("仓库 %s 还没有发过版本（vX.Y.Z 或 <目录>/vX.Y.Z 的 tag）", "Repository %s has no versions yet (vX.Y.Z or <dir>/vX.Y.Z tags)", repo)
+	}
+	// 有 marker 的一级子目录：treeish 是一个 tag，only 不空时只看这个目录
+	scan := func(tag, only string) ([]string, error) {
+		out, err := gitRun(ctx, repo, "--git-dir="+dir, "ls-tree", "-r", "--name-only", "refs/tags/"+tag+"^{commit}")
+		if err != nil {
+			return nil, err
+		}
+		var ds []string
+		for _, p := range strings.Split(string(out), "\n") {
+			d, f, ok := strings.Cut(p, "/")
+			if !ok || strings.Contains(f, "/") || !slices.Contains(markers, f) || (only != "" && d != only) {
+				continue
+			}
+			ds = append(ds, d)
+		}
+		return ds, nil
 	}
 	seen := map[string]bool{}
 	var dirs []string
-	for _, p := range strings.Split(string(out), "\n") {
-		d, f, ok := strings.Cut(p, "/")
-		if !ok || strings.Contains(f, "/") || seen[d] || !slices.Contains(markers, f) {
-			continue
+	for d, tag := range own {
+		ds, err := scan(tag, d)
+		if err != nil {
+			return nil, err
 		}
-		seen[d] = true
-		dirs = append(dirs, d)
+		if len(ds) > 0 {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	if bare != "" {
+		ds, err := scan(bare, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range ds {
+			if !seen[d] && own[d] == "" {
+				seen[d] = true
+				dirs = append(dirs, d)
+			}
+		}
 	}
 	sort.Strings(dirs)
 	return dirs, nil

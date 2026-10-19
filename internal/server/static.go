@@ -22,6 +22,15 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if p == "" {
 		p = "index.html"
 	}
+	// 浏览器打开没带项目的地址（127.0.0.1:<端口>）：跳到默认项目自己的源 <项目>.localhost（每个项目一个源，见 view.go）。
+	// ANNULO_SINGLE_ORIGIN=1 时不跳（浏览器解析不了 *.localhost 时用）
+	if r.Header.Get("Sec-Fetch-Dest") == "document" && (path.Ext(p) == "" || p == "index.html") {
+		if s.ready.Load() && remoteOf(r) == nil && hostProject(r.Host) == "" && s.projectURL(s.ws.ProjectID) != "" {
+			target := strings.TrimSuffix(s.projectURL(s.ws.ProjectID), "/_shuttle/") + r.URL.RequestURI()
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
+	}
 	f, err := s.web.Open(p)
 	if err != nil {
 		if path.Ext(p) != "" {

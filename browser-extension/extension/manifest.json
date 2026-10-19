@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Annulo",
+  "version": "0.1.0",
+  "description": "__MSG_description__",
+  "default_locale": "en",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8KDWLmn7dx8PlpUnRWt9IGMljKI5zfR7HGGrIKw/N9VyEsOE2CNKYCOLEatexD0XAr+taR2R9cPIfew9WQb1phRcX19Z4KeK9kcwV22KNESbW339H8wftLOASujjgmH/xXa8vE7oDcfx6nV3Psqkrbv0HrCE5GrPrqa93ey3/y5elwrbPBbS5BCj1kqzknLIJA2NaOzAPx792OsBWQRnlrlHGgZas99YY5bbIL5Oolujpky6S3cj9IKB706kQ/o8SFDOXfac/nP3JcnK08WwkCPXik0oLDys2Ue67OlQYNA0lkLKYxGvDlQPMeKCoaZQtI1t1jOWKXpp9kuJ7xWYZQIDAQAB",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "debugger",
+    "alarms",
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "Annulo",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "minimum_chrome_version": "116"
+}

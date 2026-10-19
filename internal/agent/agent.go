@@ -35,6 +35,7 @@ const systemPromptBase = `你是 Annulo 里的助手：帮用户把他们要的�
 用户要你以后在这个项目里一直怎么做（回答风格、不能做的事、固定的做法），写进项目根目录的 INSTRUCTIONS.md（没有就新建，用户也能在 设置 → 项目 里改）：它归用户，每段新对话都会放进下面「用户的要求」一节；ANNULO.md / SHUTTLE.md 是模板带的，不要往里写这类要求。
 
 缺少会实质影响结果的信息时（定位、目标客户、要不要发布、选哪个对象这类），用 request_user_input 一次问清楚（1~6 个问题，选择题给 2~6 个选项）；单独调用它，不和其他工具一起；小事自己合理判断，不要事事都问。拿到回答后直接照做，不要再确认一遍。
+消息是项目的任务（以「按项目里的任务「…」做」或 "Do the project task" 开头，页面上的按钮和定时任务发的，也可能是用户复制过来的）或定时任务（以「定时任务「…」：」或 "Scheduled task" 开头）时：它通常在后台跑，用户不一定在看。不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，在最后的回复里说明做了哪些假设、有什么要用户处理的；做出来的东西在项目的某个页面能看到的，最后给出那个页面的链接。
 skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」），需要新能力时用 bash 自己安装。
 简洁地回复用户：用用户说的语言回复，拿不准时用下面「界面语言」一行写的语言。
 
@@ -48,8 +49,10 @@ skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」
 - 调外部 API、批量检测这类确定的、要反复跑的活，写成本机函数，让页面按钮直接调，不要每次都靠你一条条执行。
 - 用命令行工具不确定子命令、参数怎么写时，先看 <命令> --help，不要猜。命令报错先读报错和 --help，
   别换着花样乱试；结果和预期不符（比如列表是空的）先怀疑自己用错了，不要直接下结论说「不支持」。
+- 执行命令的工具有 description 参数时（bash），每次都要填：用用户的语言写一句 5~10 个字的说明（比如「统计 tables 目录的表」），界面上显示它代替命令原文。
+- 用户消息里的 @表:id 或 @表:id#n 是引用：指项目业务表里的一条记录（#n 是这条记录文件列表里的第 n 个，从 1 开始）。Annulo 会在消息后面附上 <references>（是什么、主要字段、文件的本机路径，引用的图片也附给你看），要全文用 db_query 按 id 读。要改引用的东西，照项目的任务和说明做。
 - 项目（工作目录）是本地 git 仓库：提交只用 annulo push -m '说明'；回滚用 git（见 annulo skill 的 git.md）。项目对外的网站不在这个仓库里，按它自己的工具推。
-- 项目的页面只能在 Annulo 里打开：不要给项目的预览地址（单独打开会报错）。左侧直接渲染工作目录里的文件，页面代码一保存就自动刷新，不用 push、也不用让用户去刷新；annulo push 是提交改动。项目对外的网站的预览地址照常给。
+- 项目的页面只能在 Annulo 里打开：不要给项目的预览地址（单独打开会报错）。回复里提到用户能在页面上看的东西（你做好、改好了的东西，要用户处理的地方），就写成页面链接 [按钮上的字](/?view=…&…)，提到哪里写到哪里，不要攒到最后统一给一个；地址用页面实际的路径和查询参数（和 page_errors 的 path 一样，以 / 开头、不带域名和端口，有空格时整个地址用 <> 包起来），项目有哪些页面、参数看 ANNULO.md：对话里会显示成按钮，点了左侧跳到那个页面。左侧直接渲染工作目录里的文件，页面代码一保存就自动刷新，不用 push、也不用让用户去刷新；annulo push 是提交改动。项目对外的网站的预览地址照常给。
 - 改了项目的页面代码（保存了就行，不用先 push），先用 page_errors（reload: true，path 传改的页面）确认没报错再说改好了；用户说页面空白、报错时也先用它拿报错原文（见 annulo skill 的 pages.md）。
 - page_errors 的 path 必须是项目实际使用的页面地址（包括查询参数），先读页面入口、导航代码和 SHUTTLE.md 确认。组件名或导航名字不等于 URL；使用查询参数切页的项目不能把它猜成 /某个名字。只刷新当前页面时不传 path。
 
@@ -63,7 +66,13 @@ skill 就是目录里的文件，由 Annulo 管理（见下方「Skill 目录」
 
 - type：line 看随时间的变化，bar 比较分类（类别、对象、Top N）。x 是横轴字段，y 是 1~4 个数值字段（多个就是多条线 / 分组柱，单位要一样），labels 用回复的语言给字段起名。
 - data 是按横轴排好序的行，数值写成数字（不带单位、不加引号，缺的写 null）。最多 200 行，点太多先用 db_aggregate 按周 / 月汇总，或只取 Top N。
-- 数必须来自刚查到的结果，不要估。某个对象没有这项指标（或没查到）就不放进图里，不要当 0 画；口径不同的指标（比如网站访问量和社媒浏览量）分开画、分开说。只有一两个数就直接说，不画。图后面用一两句话说结论，图里的数不用逐条再列。`
+- 数必须来自刚查到的结果，不要估。某个对象没有这项指标（或没查到）就不放进图里，不要当 0 画；口径不同的指标（比如网站访问量和社媒浏览量）分开画、分开说。只有一两个数就直接说，不画。图后面用一两句话说结论，图里的数不用逐条再列。
+
+## 给用户看本机的图片、视频、音频、PDF
+
+要用户看、听本机的图片、视频或音频（登录二维码、截图、生成或下载的图片和视频、配音和配乐），在回答里写图片语法，路径用绝对路径：![B 站登录二维码](</Users/me/.catbus/cache/bilibili/qrcode.png>)。
+对话里会直接显示图片、带播放器播放视频和音频，下面带「打开」「在文件夹中显示」按钮，不用再用 open 命令弹窗。支持图片 png、jpg、gif、webp、bmp、avif、svg，视频 mp4、mov、m4v、webm，音频 mp3、m4a、wav、ogg、opus、aac、flac；PDF 显示成一张卡片，点了在新标签页打开；路径用 <> 包起来，有空格也不会断。
+多张图连着写、每行一张、中间不夹文字，会排成缩略图网格；每张要单独说明的，就一张图一段话分开写。`
 
 // creghtPrompt 是连着 creght 时才加的说明：creght CLI 和推送的规矩。
 const creghtPrompt = `
@@ -180,6 +189,77 @@ func (a *Agent) projectPlugins() string {
 	return sb.String()
 }
 
+// serverPrompt：部署在服务器上（ANNULO_MODE=server，docs/server-and-multi-project.md「服务端部署」）。%[1]s 是数据目录
+const serverPrompt = `
+
+## 你在服务器上
+
+Annulo 部署在服务器（通常是 Docker 容器）里，用户在自己的浏览器里远程用，不在这台机器前面：
+- **要留下来的东西都在数据目录 %[1]s**（项目目录就在它下面）。容器里别的路径重启就没了；apt、pip、npm -g 装的工具也会丢，要长期用的装到 %[1]s/tools 下（pip install --target、npm --prefix），并告诉用户装在哪。
+- **用户打不开这台机器的 localhost 和文件路径**。给用户看项目里的文件，回答里写成链接 [文件名](/_annulo/project-files/<项目里的相对路径>)（HTML、图片、PDF 都能直接打开）；
+  起了服务（python -m http.server、npm run dev…）就监听 127.0.0.1 的一个端口（1024 以上），给链接 [打开](/_annulo/port/<端口>/)。不要让用户自己去开 localhost。
+  服务要在后台一直跑（nohup … &），页面里的资源用相对路径（/_annulo/port/<端口>/ 下面），绝对路径 / 开头的会找不到。
+- 这台机器上没有用户的浏览器：ctx.browser、社媒发布和采集、在用户网页上提问在服务器上用不了，需要时告诉用户这些要在本机版 Annulo 里做。
+- 用这个 Annulo 的是一个团队，不止一个人：改项目、删数据前说清楚会影响到谁。
+- 项目的业务表存在这台服务器上（Postgres 或数据目录里的 SQLite），**读业务表用 db_query / db_aggregate 工具**，写业务表调本机函数（annulo run）。
+  这里没有「离线项目 / 在线项目」之分，不要建议用户「转成在线项目」；annulo push 只在项目的 git 里提交。`
+
+// workFilesPrompt：助手做图片、视频、网站、脚本时的工作文件放哪。只是约定，Annulo 不建、不扫、不记这个目录：
+// 项目目录只放项目自己的代码（会进 git、推 creght、参与模板升级），成品用 annulo upload 存进项目，表里只记它给的地址。
+// 本机放用户主目录下的 Annulo/<项目名>（看得到、自己能备份和删）；服务端部署只有数据目录不会丢，放 <数据目录>/work/<项目名>。
+// 调用方持有 a.mu（和 systemPrompt 一样）。
+func (a *Agent) workFilesPrompt() string {
+	id, cwd := a.ws, a.cwd
+	if id == "" {
+		return ""
+	}
+	name := ""
+	if a.ProjectName != nil {
+		name = a.ProjectName()
+	}
+	dir := WorkFilesDir(a.cfg.Dir, a.cfg.Server, name, id)
+	if dir == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+## 工作文件放哪
+
+做图片、视频、网站、脚本、数据分析时产生的工作文件（工程、源码、素材、中间结果）**不要放进项目目录**（当前目录 %[1]s），也不要放进 Annulo 的数据目录（%[2]s）里别的地方：项目目录只放项目自己的代码，会进 git、推到 creght、参与模板升级；数据目录是 Annulo 自己的。
+- 以后还要接着用的放 %[3]s（没有就建），一件事一个子目录（video/、site/、scripts/…），能共用的工程（比如装好依赖的视频工程）就共用，下次先到这里找。
+- 用完就扔的放系统临时目录，或者你自己的临时目录。
+- 做出来要进项目的成品用 annulo upload 存进项目（视频这类大文件加 --local，只存在这台电脑上），表里只记它给的地址，不记这些目录里的路径。
+- 用户要用 git 管这些文件、推到自己的仓库，照用户说的做；没说就不用管它们的版本。`, cwd, a.cfg.Dir, dir)
+}
+
+// WorkFilesDir 是项目的工作目录：本机是 ~/Annulo/<项目名>，服务端部署是 <数据目录>/work/<项目名>。
+// 助手的系统提示（上面）和本机函数的 ctx.fs（internal/localfn/fs.go）用同一个。
+func WorkFilesDir(dataDir string, server bool, name, id string) string {
+	if server {
+		return filepath.Join(dataDir, "work", workDirName(name, id))
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Annulo", workDirName(name, id))
+}
+
+// workDirName 把项目名变成能当目录名的一段：去掉路径分隔符和系统不认的字符，空的用项目 id。
+func workDirName(name, id string) string {
+	name = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if strings.ContainsRune(`/\:*?"<>|`, r) || r < 0x20 {
+			return '-'
+		}
+		return r
+	}, name))
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		return id
+	}
+	return name
+}
+
 // systemPrompt 在基础提示后面加上项目说明和 skill 目录的说明。skill 就是文件，agent 用 bash 自己装、自己读，不需要专门的工具。
 func (a *Agent) systemPrompt() string {
 	ops := ""
@@ -188,13 +268,16 @@ func (a *Agent) systemPrompt() string {
 			"写业务表优先调本机函数，确实要用 creght CLI 写时整串原样传 `--site_id=" + a.OpsSite + "`。"
 	}
 	connected := a.creghtConnected()
-	if a.Offline {
+	if a.Offline && !a.cfg.Server { // 服务端部署没有离线 / 在线之分：数据都在服务器上（serverPrompt 里说）
 		ops = "\n\n这是**离线项目**：业务表存在这台电脑上，**读业务表用 db_query / db_aggregate 工具**，写业务表调本机函数（annulo run）。" +
 			"annulo push 只在本机 git 提交；backend/func/ 的站点 Func、表单 webhook、手机上访问后台、远程访问都用不了。"
 		if connected {
 			ops += "不要用 creght table 命令，不要 creght push / pull 项目。用户连着 creght 账号：creght 站点、creght 平台的模型和 MCP 照常能用；" +
 				"用户想要手机访问、多设备时，告诉他在 设置 → 项目 里把它转成在线项目（数据会自动迁移）。"
 		}
+	}
+	if a.cfg.Server {
+		ops += fmt.Sprintf(serverPrompt, a.cfg.Dir)
 	}
 	// creght 的说明只给连着 creght 的、或者项目本身在 creght 上的（docs/annulo-plan.md 第 2 步）
 	if connected || a.OpsSite != "" {
@@ -204,7 +287,7 @@ func (a *Agent) systemPrompt() string {
 	if a.cfg.Locale() == "en" {
 		lang = "English"
 	}
-	return systemPromptBase + "\n\n界面语言：" + lang + "（用户在 Annulo 设置里选的，或跟随系统）。" + ops + a.workspaceNotes() + a.instructions() + a.projectPlugins() + a.projectTasks() + fmt.Sprintf(`
+	return systemPromptBase + "\n\n界面语言：" + lang + "（用户在 Annulo 设置里选的，或跟随系统）。" + ops + a.workFilesPrompt() + a.workspaceNotes() + a.instructions() + a.projectPlugins() + a.projectTasks() + fmt.Sprintf(`
 
 ## Skill 目录
 
@@ -217,7 +300,7 @@ func (a *Agent) systemPrompt() string {
 
 // Event 是推给前端的事件，只保留界面要用的几种。
 type Event struct {
-	Type    string         `json:"type"` // turn_start | turn_end | text | thinking | tool_start | tool_end | context
+	Type    string         `json:"type"` // turn_start | turn_end | text | thinking | tool_start | tool_end | context | steer | background
 	Text    string         `json:"text,omitempty"`
 	Tool    string         `json:"tool,omitempty"`
 	ToolID  string         `json:"tool_id,omitempty"`
@@ -227,6 +310,7 @@ type Event struct {
 	ContextTokens int `json:"context_tokens,omitempty"`
 	ContextWindow int `json:"context_window,omitempty"`
 	// steer：用户中途插的话被送达模型了（ToolID 是插话的 id，Data 是界面要显示的内容）
+	// background：还在跑的后台任务（Data 是 []map[string]string，id / description / type）
 	Data any `json:"data,omitempty"`
 }
 
@@ -235,6 +319,8 @@ type Agent struct {
 	OpsSite string
 	// Offline：当前是离线项目（数据在本机，没有 creght 站点），系统提示里换一段说明
 	Offline bool
+	// ProjectName 是项目的名字，工作文件目录用它（workFilesPrompt）；没设或是空的用项目 id
+	ProjectName func() string
 
 	cfg   *config.Config
 	ws    string // 当前项目（运营后台项目 id）：对话历史按它分开存
@@ -248,7 +334,8 @@ type Agent struct {
 	waiting map[string]bool // 问卷显示了、在等用户回答的对话（这段对话下一轮开始时清掉）
 	// chatThinking：这段对话固定用的思考档位，不跟全局设置走（任务文件写了 thinking 时，任务跑的那一轮用它）
 	chatThinking map[string]string
-	creght       creghtModels // 内置 creght 服务商：集群地址和平台模型列表的缓存（见 models.go）
+	creght       *creghtModels // 内置 creght 服务商：集群地址和平台模型列表的缓存（见 models.go），一家子共用
+	fam          *family       // 同一台电脑上每个项目各一个 Agent（Fork），共用设置；外部 agent 的 MCP 按 token 找到是哪个项目的
 
 	// MCPURL 是本机给外部 agent（Claude Code / Codex）用的 MCP 地址，带上 mcpToken 才能调（climcp.go）
 	MCPURL   string
@@ -319,7 +406,8 @@ type RunStats struct {
 }
 
 func New(cfg *config.Config) *Agent {
-	a := &Agent{cfg: cfg, ws: cfg.BackendID(), cwd: cfg.BackendDir(), chats: map[string]*chatSession{}, mcpToken: newMCPToken(), creght: creghtModels{host: creght.DefaultHost}} // 还没有项目时为空，选好后 SetWorkspace
+	a := &Agent{cfg: cfg, ws: cfg.BackendID(), cwd: cfg.BackendDir(), chats: map[string]*chatSession{}, mcpToken: newMCPToken(), creght: &creghtModels{host: creght.DefaultHost}, fam: &family{members: map[string]*Agent{}}} // 还没有项目时为空，选好后 SetWorkspace
+	a.fam.add(a)
 	// creght 服务商用设置里选的集群；有了运营后台就跟着它（SetCreghtHost）
 	if cfg.Creght != "" {
 		a.creght.host = creght.NormHost(cfg.Creght)
@@ -327,6 +415,61 @@ func New(cfg *config.Config) *Agent {
 	a.migrateLegacyChats()
 	go cliModels() // 先找一遍 claude / codex（第一次要跑一下登录 shell 拿 PATH），别等到持着锁列模型时才找
 	return a
+}
+
+// family 是同一个进程里的所有 Agent：每个打开的项目一个（Fork 出来的），加上最初那个。
+type family struct {
+	mu      sync.Mutex
+	members map[string]*Agent // mcpToken → Agent
+}
+
+func (f *family) add(a *Agent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.members[a.mcpToken] = a
+}
+
+func (f *family) byToken(tok string) *Agent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.members[tok]
+}
+
+func (f *family) all() []*Agent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*Agent, 0, len(f.members))
+	for _, a := range f.members {
+		out = append(out, a)
+	}
+	return out
+}
+
+// Fork 给另一个项目一个 Agent：对话、会话、工作目录、工具是它自己的，设置（cfg）、creght 模型缓存、MCP 地址共用。
+// 几个项目可以同时开着、各自的对话同时跑（docs/server-and-multi-project.md「多项目同时开」）。
+func (a *Agent) Fork(id, dir string) *Agent {
+	n := &Agent{cfg: a.cfg, ws: id, cwd: dir, chats: map[string]*chatSession{}, mcpToken: newMCPToken(), creght: a.creght, fam: a.fam, MCPURL: a.MCPURL}
+	a.mu.Lock()
+	n.tools = a.tools
+	a.mu.Unlock()
+	a.fam.add(n)
+	return n
+}
+
+// Workspace 是这个 Agent 的项目 id（没有项目时是空的）。
+func (a *Agent) Workspace() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.ws
+}
+
+// AllRunningChats 是所有项目里正在跑的对话（退出、更新前确认用）。
+func (a *Agent) AllRunningChats() []string {
+	out := []string{}
+	for _, m := range a.fam.all() {
+		out = append(out, m.RunningChats()...)
+	}
+	return out
 }
 
 // SetWorkspace 切换项目：工作目录、对话历史都换成那个项目的，当前会话作废。
@@ -423,7 +566,7 @@ func (a *Agent) session(chatID string) (*chatSession, error) {
 		Model:         m,
 		ThinkingLevel: agent.ThinkingLevel(a.thinkingFor(chatID)),
 		Cwd:           a.cwd,
-		BashEnv:       chatEnv(chatID), // 它跑的 annulo run 知道是哪段对话（本机函数的 ctx.chat_id）
+		BashEnv:       chatEnv(chatID, a.ws), // 它跑的 annulo run 知道是哪段对话（本机函数的 ctx.chat_id）、哪个项目
 		SystemPrompt:  a.systemPrompt(),
 		APIKey:        key,
 		Skills:        a.sessionSkills(), // 只用 Shuttle 管理的 skill，不扫描用户其他 agent 的目录
@@ -697,10 +840,15 @@ func resultText(r any) string {
 }
 
 // chatEnv：助手在这段对话里跑的命令带上的环境变量。ANNULO_CHAT_ID（老名字 SHUTTLE_CHAT_ID）是对话 id，
-// annulo run 把它传给本机函数，函数里读 ctx.chat_id，就能把结果记到「出自哪段对话」，不用助手照抄 id
-func chatEnv(chatID string) map[string]string {
+// annulo run 把它传给本机函数，函数里读 ctx.chat_id，就能把结果记到「出自哪段对话」，不用助手照抄 id。
+// ANNULO_PROJECT 是项目：几个项目同时开着时，命令行（annulo run …）照它找项目，cd 到别的目录也不会跑到别的项目上
+func chatEnv(chatID, project string) map[string]string {
 	env := map[string]string{}
-	for _, kv := range brand.ChildEnv("CHAT_ID", chatID) {
+	kvs := brand.ChildEnv("CHAT_ID", chatID)
+	if project != "" {
+		kvs = append(kvs, brand.ChildEnv("PROJECT", project)...)
+	}
+	for _, kv := range kvs {
 		k, v, _ := strings.Cut(kv, "=")
 		env[k] = v
 	}

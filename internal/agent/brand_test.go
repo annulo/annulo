@@ -10,7 +10,7 @@ import (
 // 项目总说明新旧名字都认（internal/brand）：ANNULO.md 优先，没有再读 SHUTTLE.md。
 func TestWorkspaceNotesBothNames(t *testing.T) {
 	dir := t.TempDir()
-	a := &Agent{cwd: dir}
+	a := &Agent{creght: &creghtModels{}, cwd: dir}
 	if !strings.Contains(a.workspaceNotes(), "还没有 SHUTTLE.md") {
 		t.Fatal("没有说明文件时提示补一份")
 	}

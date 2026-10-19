@@ -1,0 +1,60 @@
+# Annulo 服务端版：annulo + Postgres。用法见 docs/server-deploy.md：
+#   docker compose up -d                                  （单机，最常用）
+#   docker stack deploy -c docker-compose.yml annulo      （Docker Swarm，同一份文件）
+# 不用填任何配置：1. docker compose up -d；2. 先用 http://<服务器 IP> 打开，第一个注册的是管理员；
+# 3. 设置 → 域名 里填域名（先解析到这台服务器），Annulo 当场申请证书，之后自动续期。不需要前置代理。
+#
+# Annulo 只能跑一个实例（项目文件、对话、定时任务状态在 /data 卷里），所以 replicas 是 1、更新时先停后起。
+# Swarm 下 80 / 443 用 host 模式发布：程序要看到访客的真实 IP、自己回答证书验证；annulo 和 db 的卷都在本机，
+# 多节点的 Swarm 要用 placement 把它们固定在同一台上（下面注释）。
+# 和 creght 独立部署版装在同一台服务器时，80 / 443 给 creght，删掉 annulo 的 ports，域名在 creght 后台「域名反代到内部服务」里绑。
+services:
+  annulo:
+    image: ${ANNULO_IMAGE:-annulo/annulo:latest}
+    restart: unless-stopped
+    ports:
+      - target: 8080
+        published: ${HTTP_PORT:-80}
+        mode: host
+      - target: 8443
+        published: ${HTTPS_PORT:-443}
+        mode: host
+    environment:
+      DATABASE_URL: postgres://annulo:${POSTGRES_PASSWORD:-change-me}@db:5432/annulo?sslmode=disable
+    volumes:
+      - annulo-data:/data
+    depends_on: # docker compose 用；Swarm 忽略它，Annulo 启动时自己等 Postgres
+      - db
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+      restart_policy:
+        condition: any
+      # placement:
+      #   constraints: [node.labels.annulo == true]
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: annulo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: annulo
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U annulo -d annulo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+      # placement:
+      #   constraints: [node.labels.annulo == true]
+
+volumes:
+  annulo-data:
+  pg-data:

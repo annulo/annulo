@@ -16,7 +16,7 @@ const testAsset = "0123456789abcdef0123456789abcdef.png"
 
 // 离线项目上传：地址不带主机和端口，同源直接能取
 func TestOfflineAssetPath(t *testing.T) {
-	s := &Server{cfg: &config.Config{Dir: t.TempDir(), Host: "127.0.0.1", Port: 7799}}
+	s := newTestServer(&config.Config{Dir: t.TempDir(), Host: "127.0.0.1", Port: 7799}, nil, nil)
 	a, err := s.saveOfflineAsset("cover.png", "image/png", []byte("png-bytes"))
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestOfflineAssetPath(t *testing.T) {
 }
 
 func TestLocalAssetFile(t *testing.T) {
-	s := &Server{cfg: &config.Config{Dir: t.TempDir()}}
+	s := newTestServer(&config.Config{Dir: t.TempDir()}, nil, nil)
 	want := filepath.Join(s.assetsDir(), testAsset)
 	for _, ok := range []string{
 		"/_annulo/uploaded/" + testAsset,
@@ -63,7 +63,7 @@ func TestLocalAssetFile(t *testing.T) {
 
 // 转在线：新旧写法都换成线上地址，同一个文件只传一次；找不到、传失败的原样留着并列出来
 func TestUploadLocalAssets(t *testing.T) {
-	s := &Server{cfg: &config.Config{Dir: t.TempDir()}}
+	s := newTestServer(&config.Config{Dir: t.TempDir()}, nil, nil)
 	os.MkdirAll(s.assetsDir(), 0o700)
 	os.WriteFile(filepath.Join(s.assetsDir(), testAsset), []byte("png"), 0o600)
 	broken := "fedcba9876543210fedcba9876543210.jpg"

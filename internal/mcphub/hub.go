@@ -49,6 +49,8 @@ type ServerConfig struct {
 	URL      string            `json:"url,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	Disabled bool              `json:"disabled,omitempty"`
+	// Managed 标记这一项由 Annulo 管（SetManaged）：地址和鉴权跟着 Annulo 走，用户只能停用、启用、开关工具
+	Managed bool `json:"managed,omitempty"`
 	// ExcludeTools 是关掉的工具（MCP 里的原名），不交给 agent
 	ExcludeTools []string `json:"excludeTools,omitempty"`
 }
@@ -78,6 +80,7 @@ type ServerStatus struct {
 	Error     string       `json:"error,omitempty"`
 	AuthURL   string       `json:"auth_url,omitempty"` // needs_auth 时让用户打开的授权地址
 	Authed    bool         `json:"authed"`             // 本机存有 OAuth 授权
+	Managed   bool         `json:"managed"`            // Annulo 内置（creght）：不能删、不用授权，跟着 设置 → 连接 走
 	Tools     []ToolStatus `json:"tools"`
 }
 
@@ -95,6 +98,13 @@ type server struct {
 	session *mcp.ClientSession
 	tools   []*mcp.Tool
 	pending *pendingAuth // 等用户授权时非空
+	managed bool         // 这次是按内置的连的（Annulo 给 token）
+}
+
+// Managed 是 Annulo 内置的 server（creght）：地址由 Annulo 给，每个请求带 Token() 拿到的 Bearer，不走 OAuth。
+type Managed struct {
+	URL   string
+	Token func(ctx context.Context) (string, error)
 }
 
 type Hub struct {
@@ -104,10 +114,13 @@ type Hub struct {
 
 	mu       sync.Mutex
 	servers  map[string]*server
+	managed  map[string]*Managed
 	onChange func() // 工具集变了（连上 / 断开 / 重载）时回调
 }
 
-func New(dir string) *Hub { return &Hub{dir: dir, servers: map[string]*server{}} }
+func New(dir string) *Hub {
+	return &Hub{dir: dir, servers: map[string]*server{}, managed: map[string]*Managed{}}
+}
 
 func (h *Hub) File() string { return filepath.Join(h.dir, "mcp.json") }
 
@@ -151,6 +164,10 @@ func parseConfig(b []byte) (Config, error) {
 // SaveConfig 校验并保存配置，然后按新配置重连。
 func (h *Hub) SaveConfig(b []byte) error {
 	if _, err := parseConfig(b); err != nil {
+		return err
+	}
+	b, err := h.keepManaged(b)
+	if err != nil {
 		return err
 	}
 	if err := h.writeConfig(b); err != nil {
@@ -239,9 +256,17 @@ func (h *Hub) SetToolsEnabled(name string, tools []string, enabled bool) error {
 	return nil
 }
 
-// EnsureServer 在 mcp.json 里没有 name 时加上它并连接；已经有（包括用户改过或关掉的）就不动。
-// 用户不想要可以在设置里关掉（disabled），删掉的话下次还会被加回来。
-func (h *Hub) EnsureServer(name string, sc ServerConfig) error {
+// SetManaged 设置 Annulo 内置的 server（m 为 nil 是去掉）：mcp.json 里写上（去掉）这一项然后重连。
+// 地址总是 m.URL；用户能改的只有停用（disabled）和关掉的工具（excludeTools），在原始 JSON 里改、别的字段不动。
+// 以前用户自己加的同名项（没有 managed 标记）接管过来：只留关掉的工具，以前为了 OAuth 停用的重新启用。
+func (h *Hub) SetManaged(name string, m *Managed) error {
+	h.mu.Lock()
+	if m == nil {
+		delete(h.managed, name)
+	} else {
+		h.managed[name] = m
+	}
+	h.mu.Unlock()
 	b, err := h.ReadConfig()
 	if err != nil {
 		return err
@@ -255,15 +280,96 @@ func (h *Hub) EnsureServer(name string, sc ServerConfig) error {
 		servers = map[string]any{}
 		raw["mcpServers"] = servers
 	}
-	if _, ok := servers[name]; ok {
+	old, _ := servers[name].(map[string]any)
+	var next map[string]any
+	if m != nil {
+		next = map[string]any{"type": "http", "url": m.URL, "managed": true}
+		if old != nil {
+			if ex, ok := old["excludeTools"]; ok {
+				next["excludeTools"] = ex
+			}
+			if d, _ := old["disabled"].(bool); d && old["managed"] == true {
+				next["disabled"] = true
+			}
+		}
+	}
+	if old == nil && next == nil {
 		return nil
 	}
-	servers[name] = sc
+	if old != nil && next != nil && jsonEqual(old, next) {
+		// 配置没变：启动时先按普通 server 连过（那时还没设置内置）、或者之前连失败了（token 失效后重新连接了 creght），重连一次
+		h.mu.Lock()
+		cur := h.servers[name]
+		stale := cur != nil && cur.status != "disabled" && (!cur.managed || cur.status == "failed" || cur.status == "needs_auth")
+		h.mu.Unlock()
+		if stale {
+			return h.Reconnect(name)
+		}
+		return nil
+	}
+	if next == nil {
+		delete(servers, name)
+	} else {
+		servers[name] = next
+	}
+	os.Remove(h.authFile(name)) // 内置的不用 OAuth：以前授权留下的不再用
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
 	return h.SaveConfig(append(out, '\n'))
+}
+
+func jsonEqual(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
+}
+
+// keepManaged：用户在 JSON 里删了内置的 server、改了它的地址，保存时补回来（停用和关掉的工具照用户的）。
+func (h *Hub) keepManaged(b []byte) ([]byte, error) {
+	h.mu.Lock()
+	managed := make(map[string]string, len(h.managed))
+	for name, m := range h.managed {
+		managed[name] = m.URL
+	}
+	h.mu.Unlock()
+	if len(managed) == 0 {
+		return b, nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, i18n.Errorf("mcp.json 不是合法 JSON：%w", "mcp.json isn't valid JSON: %w", err)
+	}
+	servers, _ := raw["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+		raw["mcpServers"] = servers
+	}
+	changed := false
+	for name, u := range managed {
+		sc, _ := servers[name].(map[string]any)
+		if sc == nil {
+			sc = map[string]any{}
+			servers[name] = sc
+		}
+		for k, v := range map[string]any{"type": "http", "url": u, "managed": true} {
+			if sc[k] != v {
+				sc[k], changed = v, true
+			}
+		}
+		for _, k := range []string{"command", "args", "env", "headers"} {
+			if _, ok := sc[k]; ok {
+				delete(sc, k)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return b, nil
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	return append(out, '\n'), err
 }
 
 // estimateTokens 粗估工具定义的 token 数：JSON 字节数 / 4，给界面提示哪些工具占得多。
@@ -368,8 +474,17 @@ func (h *Hub) dial(ctx context.Context, s *server) (*mcp.ClientSession, []*mcp.T
 		t = &mcp.CommandTransport{Command: cmd}
 	case "http":
 		st := &mcp.StreamableClientTransport{Endpoint: expand(c.URL), HTTPClient: headerClient(c.Headers)}
-		// 自己配了 Authorization 头的不走 OAuth；其余遇到 401 时发起授权
-		if _, ok := c.Headers["Authorization"]; !ok && h.CallbackURL != "" {
+		h.mu.Lock()
+		m := h.managed[s.name]
+		h.mu.Unlock()
+		h.mu.Lock()
+		s.managed = m != nil
+		h.mu.Unlock()
+		if m != nil {
+			// 内置的：地址和 token 都是 Annulo 给的，不走 OAuth
+			st.Endpoint, st.HTTPClient = m.URL, &http.Client{Transport: tokenTransport{token: m.Token, base: http.DefaultTransport}}
+		} else if _, ok := c.Headers["Authorization"]; !ok && h.CallbackURL != "" {
+			// 自己配了 Authorization 头的不走 OAuth；其余遇到 401 时发起授权
 			oh, err := h.oauthHandler(s)
 			if err != nil {
 				return nil, nil, err
@@ -409,6 +524,22 @@ func (t headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(r)
 }
 
+// tokenTransport 每个请求都重新取一次 token：Token 自己缓存、快过期时刷新（creght 的 access token 一小时）。
+type tokenTransport struct {
+	token func(ctx context.Context) (string, error)
+	base  http.RoundTripper
+}
+
+func (t tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	tok, err := t.token(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+tok)
+	return t.base.RoundTrip(r)
+}
+
 func headerClient(h map[string]string) *http.Client {
 	if len(h) == 0 {
 		return nil
@@ -440,6 +571,7 @@ func (h *Hub) Status() []ServerStatus {
 			st.AuthURL = s.pending.url
 		}
 		st.Authed = h.loadAuth(s.name) != nil
+		st.Managed = h.managed[s.name] != nil
 		for _, t := range s.tools {
 			st.Tools = append(st.Tools, ToolStatus{Name: t.Name, Enabled: !s.cfg.excluded(t.Name), Tokens: estimateTokens(t)})
 		}

@@ -31,6 +31,9 @@ func (h *hub) broadcast(v any) {
 	}
 }
 
+// Notify 推一条消息给所有打开着的页面（业务表变了这类，不是构建；页面里的运行时按 type 分开处理）。
+func (r *Renderer) Notify(v any) { r.events.broadcast(v) }
+
 // ServeEvents：连上先发 hello（带当前构建号），页面发现和自己加载时的构建号不一样就刷新。
 func (r *Renderer) ServeEvents(w http.ResponseWriter, req *http.Request) {
 	fl, ok := w.(http.Flusher)

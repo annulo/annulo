@@ -11,8 +11,9 @@ const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
 
 const run = promisify(execFile)
-// 2026-10-06 起官网是 annulo.creght.cn；老域名 shuttle.site.creght.cn 要一直留着：之前装的 App 只读那里的 update.json
-const DEFAULT_FEED = 'https://annulo.creght.cn/update.json'
+// 2026-10-14 起官网是 annulo.dev。老域名要一直绑在官网上：2026.10.14-1 及以前的 App 读 annulo.creght.cn 的 update.json，
+// 2026-10-06 前的读 shuttle.site.creght.cn 的
+const DEFAULT_FEED = 'https://annulo.dev/update.json'
 
 // 版本号是日期 + 当天第几次：2026.9.29、2026.9.29-1……「-N」是同一天更晚的版本，不是 SemVer 的预发布版
 function parseVersion(v) {
@@ -47,7 +48,33 @@ function pickUpdate(feed, current, platform, arch) {
   if (!feed || !newer(feed.version, current)) return null
   const asset = feed.downloads?.[assetKey(platform, arch)]
   if (!asset || !allowedURL(asset.url) || !/^[0-9a-f]{64}$/.test(asset.sha256 || '') || !(asset.bytes > 0)) return null
-  return { version: feed.version, notes: String(feed.notes || ''), url: asset.url, sha256: asset.sha256, bytes: asset.bytes }
+  return { version: feed.version, notes: releaseNotes(feed, current), notes_i18n: releaseNotesI18n(feed, current), url: asset.url, sha256: asset.sha256, bytes: asset.bytes }
+}
+
+// 一版的说明：lang 为空取 notes（英文，老 App 也读它）；给了 lang 取 notes_i18n 里这种语言的，没有用 en，再没有用 notes
+function noteOf(r, lang) {
+  const i18n = r && typeof r.notes_i18n === 'object' && r.notes_i18n ? r.notes_i18n : {}
+  return String((lang && (i18n[lang] || i18n.en)) || r?.notes || '').trim()
+}
+
+// 更新说明：跳过了几个版本的，把比当前新的每一版的说明都列上（新的在前）；只差一版就是它自己的说明
+function releaseNotes(feed, current, lang = '') {
+  const releases = (Array.isArray(feed.releases) ? feed.releases : [])
+    .filter(r => r && noteOf(r, lang) && newer(r.version, current) && !newer(r.version, feed.version))
+    .sort((a, b) => (newer(a.version, b.version) ? -1 : 1))
+  if (releases.length > 1) return releases.map(r => `${r.version}\n${noteOf(r, lang)}`).join('\n\n')
+  return noteOf(feed, lang) || noteOf(releases[0], lang)
+}
+
+// 各语言的更新说明 { zh, en, … }（release.py 从仓库根目录的 changelog.yaml 写进 update.json），界面按自己的语言挑（web/src/lib/desktopUpdate.ts）
+function releaseNotesI18n(feed, current) {
+  const langs = new Set()
+  for (const r of [feed, ...(Array.isArray(feed.releases) ? feed.releases : [])]) {
+    if (r && typeof r.notes_i18n === 'object' && r.notes_i18n) Object.keys(r.notes_i18n).forEach(l => langs.add(l))
+  }
+  const out = {}
+  for (const l of langs) { const n = releaseNotes(feed, current, l); if (n) out[l] = n }
+  return out
 }
 
 // 正在运行的 .app 的路径（Contents/MacOS/<名字> 往上三层）
@@ -72,7 +99,7 @@ function createUpdater({ app, dataDir, log, onChange, fetchImpl = fetch }) {
     if (fs.existsSync(file) && fs.statSync(file).size === update.bytes && await sha256(file) === update.sha256) return file
     // 旧版本的安装包都删掉，只留这一份
     for (const name of fs.readdirSync(dir)) if (name !== path.basename(file)) fs.rmSync(path.join(dir, name), { recursive: true, force: true })
-    set({ state: 'downloading', version: update.version, notes: update.notes, received: 0, bytes: update.bytes })
+    set({ state: 'downloading', version: update.version, notes: update.notes, notes_i18n: update.notes_i18n, received: 0, bytes: update.bytes })
     const response = await fetchImpl(update.url)
     if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
     const tmp = file + '.part'
@@ -84,7 +111,7 @@ function createUpdater({ app, dataDir, log, onChange, fetchImpl = fetch }) {
         hash.update(chunk)
         received += chunk.length
         if (!out.write(chunk)) await new Promise(resolve => out.once('drain', resolve))
-        if (Date.now() - lastReport > 1000) { lastReport = Date.now(); set({ state: 'downloading', version: update.version, notes: update.notes, received, bytes: update.bytes }) }
+        if (Date.now() - lastReport > 1000) { lastReport = Date.now(); set({ state: 'downloading', version: update.version, notes: update.notes, notes_i18n: update.notes_i18n, received, bytes: update.bytes }) }
       }
     } finally {
       await new Promise(resolve => out.end(resolve))
@@ -110,7 +137,7 @@ function createUpdater({ app, dataDir, log, onChange, fetchImpl = fetch }) {
         update = pickUpdate(await response.json(), app.getVersion(), process.platform, process.arch)
         if (!update) { set({ state: 'idle' }); return state }
         log(`Update ${update.version} available: ${update.url}`)
-        set({ state: 'available', version: update.version, notes: update.notes, bytes: update.bytes })
+        set({ state: 'available', version: update.version, notes: update.notes, notes_i18n: update.notes_i18n, bytes: update.bytes })
       } catch (error) {
         log(`Update check failed: ${error.stack || error}`)
         // 检查失败不打扰用户：之前发现的新版本照旧显示，没有就当作没有
@@ -131,11 +158,11 @@ function createUpdater({ app, dataDir, log, onChange, fetchImpl = fetch }) {
         log(`Downloading update ${update.version}: ${update.url}`)
         const file = await download(update)
         log(`Update ${update.version} downloaded: ${file}`)
-        set({ state: 'ready', version: update.version, notes: update.notes, bytes: update.bytes, file })
+        set({ state: 'ready', version: update.version, notes: update.notes, notes_i18n: update.notes_i18n, bytes: update.bytes, file })
         return state
       } catch (error) {
         log(`Update download failed: ${error.stack || error}`)
-        set({ state: 'available', version: update.version, notes: update.notes, bytes: update.bytes, error: String(error.message || error) })
+        set({ state: 'available', version: update.version, notes: update.notes, notes_i18n: update.notes_i18n, bytes: update.bytes, error: String(error.message || error) })
         throw error
       }
     })().finally(() => { downloading = null })
@@ -224,4 +251,4 @@ async function sha256(file) {
   return hash.digest('hex')
 }
 
-module.exports = { createUpdater, parseVersion, newer, assetKey, pickUpdate, allowedURL, macAppBundle, installAppFrom }
+module.exports = { createUpdater, parseVersion, newer, assetKey, pickUpdate, releaseNotes, allowedURL, macAppBundle, installAppFrom }

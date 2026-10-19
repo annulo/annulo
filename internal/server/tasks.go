@@ -62,14 +62,6 @@ func (s *Server) syncTaskState() {
 	}
 }
 
-func taskNote(name string, scheduled bool) string {
-	if scheduled {
-		return fmt.Sprintf(scheduledNote(), name)
-	}
-	return fmt.Sprintf(i18n.T("（这是项目里的任务「%s」，用户在页面上点按钮发起的。它在后台跑，用户不一定在看：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
-		"(This is the project task \"%s\", started by the user from a button on a project page. It runs in the background and the user may not be watching: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n"), name)
-}
-
 // claimTask 占住「这个任务、这组参数」：同样的正在跑就报错。
 func (s *Server) claimTask(t *tasks.Task, input any, chatID string, scheduled bool, start time.Time) (*taskRun, error) {
 	b, _ := json.Marshal(input)
@@ -109,7 +101,7 @@ func (s *Server) startTask(t *tasks.Task, r *taskRun, fallbackName string) func(
 	if name == t.ID && fallbackName != "" {
 		name = fallbackName
 	}
-	prompt := taskNote(name, r.Scheduled) + taskPrompt(t, r.Input)
+	prompt := taskPrompt(t, r.Input) // 后台跑的约定写在系统提示里（认「按项目里的任务…做」），接着聊、复制到别的对话都在
 	title := i18n.T("任务：", "Task: ") + name
 	if r.Scheduled {
 		title = i18n.T("定时：", "Scheduled: ") + name

@@ -73,7 +73,7 @@ func TestTemplateSourceAddRemove(t *testing.T) {
 	stubTemplates(t, nil)
 	repo := localGitTemplate(t)
 	dir := t.TempDir()
-	s := &Server{cfg: &config.Config{Dir: dir}}
+	s := newTestServer(&config.Config{Dir: dir}, nil, nil)
 	setTemplateSources(dir, nil)
 	t.Cleanup(func() { setTemplateSources("", nil) })
 	call := func(method, path, body string) (int, string) {

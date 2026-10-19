@@ -48,7 +48,7 @@ func TestModelThinking(t *testing.T) {
 
 // 对话固定的思考档位优先于全局设置，清掉后回到全局
 func TestChatThinking(t *testing.T) {
-	a := &Agent{cfg: &config.Config{Dir: t.TempDir(), Thinking: "high"}}
+	a := &Agent{creght: &creghtModels{}, cfg: &config.Config{Dir: t.TempDir(), Thinking: "high"}}
 	a.SetChatThinking("c1", "low")
 	if got, other := a.thinkingFor("c1"), a.thinkingFor("c2"); got != "low" || other != "high" {
 		t.Fatalf("c1=%s c2=%s", got, other)

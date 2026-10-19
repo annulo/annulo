@@ -36,6 +36,8 @@ func btoi(b bool) int {
 //	schedules/review.check.json    { "fn": "review.check", "at": "09:00", "name": "改站复查", "input": { "days": 14 } }
 //	schedules/weekly-report.json   { "task": "weekly-report", "every": "7d", "name": "写周报" }
 //	schedules/daily-check.json     { "prompt": "看一眼昨天的数据…", "at": "09:00", "name": "每日检查" }
+//	schedules/publish.json         { "fn": "social/social.publish", "input": { "post_id": "$id" }, "name": "发布到点的帖子",
+//	                                 "due": { "table": "social_posts", "field": "scheduled_at", "where": { "status": "scheduled" } } }
 //
 // id（文件名）是运行记录和暂停状态的 key：同一个函数配多条（不同 input）就用不同的文件名。
 //
@@ -45,6 +47,7 @@ func btoi(b bool) int {
 // prompt、task 的 id 会拼进对话 id，只能用字母、数字、- 和 _。确定的活写成本机函数，只有要判断、要写的才用 prompt。
 //
 // every 是间隔（最短 5m）；at 是每天几点（本机时区）。两个都写时按 at。
+// due 是按表里的时间字段到点逐行跑 fn（排期发布这类），不写 every / at，见 schedule_due.go。
 // 电脑关着、Shuttle 没开时不跑；再打开时过了点的任务补跑一次（不会把错过的每一次都补上）。
 // 运行记录和「暂停」存在本机 ~/.shuttle/workspaces/<工作空间>/schedules.json，不进工作空间的 git。
 // 和 GEO 周测、GSC 同步、社媒采集这些业务无关：跑哪个函数、多久跑一次由工作空间自己定。
@@ -60,11 +63,10 @@ const minEvery = 5 * time.Minute
 // promptRunTimeout：定时交给助手的一轮最长跑多久，到了就停（用户不在场，卡在问卷上也会停）
 const promptRunTimeout = 30 * time.Minute
 
-// scheduledNote 接在定时提示前面：告诉助手用户不在场。按界面语言出（这段话也显示在对话里）
+// scheduledNote 接在定时提示前面，标出这是定时任务发的：后台跑的约定写在系统提示里，认这个开头
 func scheduledNote() string {
 	// 不再写对话 id：要记「出自哪段对话」的，本机函数自己读 ctx.chat_id（annulo run 带过去），不用助手照抄
-	return i18n.T("（这是定时任务「%s」自动发起的。用户现在不在：不要用 request_user_input 等用户回答，缺的信息按合理的默认做完，并在最后的回复里说明做了哪些假设、有什么要用户处理的。）\n\n",
-		"(This chat was started automatically by the scheduled task \"%s\". The user isn't here: don't use request_user_input to wait for answers; fill in missing details with sensible defaults, and in your final reply list the assumptions you made and anything the user needs to handle.)\n\n")
+	return i18n.T("定时任务「%s」：\n\n", "Scheduled task \"%s\":\n\n")
 }
 
 var atRe = regexp.MustCompile(`^([01]?\d|2[0-3]):([0-5]\d)$`)
@@ -73,14 +75,15 @@ var atRe = regexp.MustCompile(`^([01]?\d|2[0-3]):([0-5]\d)$`)
 var chatKeyRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 type scheduleDef struct {
-	ID     string `json:"-"` // 文件名（schedules/<id>.json）
-	Fn     string `json:"fn,omitempty"`
-	Prompt string `json:"prompt,omitempty"` // 给助手的一段话；fn / prompt / task 三选一
-	Task   string `json:"task,omitempty"`   // 项目里的任务 tasks/<id>.md
-	Name   string `json:"name,omitempty"`
-	Every  string `json:"every,omitempty"`
-	At     string `json:"at,omitempty"`
-	Input  any    `json:"input,omitempty"`
+	ID     string  `json:"-"` // 文件名（schedules/<id>.json）
+	Fn     string  `json:"fn,omitempty"`
+	Prompt string  `json:"prompt,omitempty"` // 给助手的一段话；fn / prompt / task 三选一
+	Task   string  `json:"task,omitempty"`   // 项目里的任务 tasks/<id>.md
+	Name   string  `json:"name,omitempty"`
+	Every  string  `json:"every,omitempty"`
+	At     string  `json:"at,omitempty"`
+	Input  any     `json:"input,omitempty"`
+	Due    *dueDef `json:"due,omitempty"` // 按表里的时间字段到点逐行跑 fn（schedule_due.go）
 
 	every time.Duration
 }
@@ -131,6 +134,8 @@ type scheduleState struct {
 	Last     *scheduleRun `json:"last,omitempty"`
 	LastOK   *time.Time   `json:"last_ok,omitempty"`
 	Fails    int          `json:"fails,omitempty"` // 连续失败次数
+	// Done：due 任务已经跑过的行（行 id → 跑的是哪个时间），同一行的同一个时间只跑一次
+	Done map[string]string `json:"done,omitempty"`
 }
 
 // scheduler 管本机所有项目的定时任务：每个项目各自的定义（项目的 schedules/）、运行记录和暂停状态
@@ -149,6 +154,9 @@ type projSched struct {
 	state   map[string]*scheduleState
 	file    string
 	running map[string]*scheduleRun // 正在跑的这次（交给助手的带着这次开的对话）
+	// due 任务：上次查表的时间、查到的接下来要跑的行（只在内存里）
+	polled   map[string]time.Time
+	upcoming map[string][]dueRow
 }
 
 // proj 取一个项目的调度状态（第一次读运行记录），schedules/ 变了就重读定义。调用方持有 sc.mu。
@@ -159,7 +167,7 @@ func (s *Server) proj(pid, dir string) *projSched {
 	}
 	p := sc.projects[pid]
 	if p == nil {
-		p = &projSched{file: filepath.Join(s.cfg.Dir, "workspaces", pid, "schedules.json"), state: map[string]*scheduleState{}, running: map[string]*scheduleRun{}}
+		p = &projSched{file: filepath.Join(s.cfg.Dir, "workspaces", pid, "schedules.json"), state: map[string]*scheduleState{}, running: map[string]*scheduleRun{}, polled: map[string]time.Time{}, upcoming: map[string][]dueRow{}}
 		if b, err := os.ReadFile(p.file); err == nil {
 			json.Unmarshal(b, &p.state)
 		}
@@ -186,16 +194,28 @@ func (p *projSched) save() {
 type schedProject struct {
 	ID, Dir, Name    string
 	Offline, Current bool
+	Open             bool // 项目打开着（有视图）：交给助手的定时任务只在打开着的项目里跑
 }
 
-// scheduleProjects：当前项目在最前；再加本机别的项目——离线的都算，在线的要和当前项目在同一个 creght 区域、这个区域登录着（要读写它在 creght 上的表）。
+// scheduleProjects：这个视图的项目（Current）在最前，再是别的打开着的项目；再加本机别的项目——离线的都算，
+// 在线的要在设置里选的 creght 区域、这个区域登录着（要读写它在 creght 上的表）。
 func (s *Server) scheduleProjects() []schedProject {
-	if !s.ready.Load() {
-		return nil
+	var out []schedProject
+	seen := map[string]bool{}
+	if s.ready.Load() {
+		cur := schedProject{ID: s.ws.ProjectID, Dir: s.ws.Dir, Offline: s.ws.Offline, Current: true, Open: true}
+		cur.Name = s.projectName(cur.ID, cur.Dir)
+		out = append(out, cur)
+		seen[cur.ID] = true
 	}
-	cur := schedProject{ID: s.ws.ProjectID, Dir: s.ws.Dir, Offline: s.ws.Offline, Current: true}
-	cur.Name = s.projectName(cur.ID, cur.Dir)
-	out := []schedProject{cur}
+	for _, v := range s.views() {
+		if seen[v.ws.ProjectID] {
+			continue
+		}
+		seen[v.ws.ProjectID] = true
+		out = append(out, schedProject{ID: v.ws.ProjectID, Dir: v.ws.Dir, Name: s.projectName(v.ws.ProjectID, v.ws.Dir), Offline: v.ws.Offline, Open: true})
+	}
+	host := s.loginHost()
 	signedIn := s.signedIn()
 	dirs := []string{}
 	ents, _ := os.ReadDir(filepath.Join(s.cfg.Dir, "backends"))
@@ -207,13 +227,12 @@ func (s *Server) scheduleProjects() []schedProject {
 	if s.cfg.LegacyProject() != "" {
 		dirs = append(dirs, filepath.Join(s.cfg.Dir, "backend"))
 	}
-	seen := map[string]bool{cur.ID: true}
 	for _, d := range dirs {
-		ws, err := creght.OpenWorkspaceOn(d, s.ws.APIHost)
+		ws, err := creght.OpenWorkspaceOn(d, host)
 		if err != nil || seen[ws.ProjectID] {
 			continue
 		}
-		if !ws.Offline && (ws.APIHost != s.ws.APIHost || !signedIn) {
+		if !ws.Offline && (ws.APIHost != host || !signedIn) {
 			continue
 		}
 		seen[ws.ProjectID] = true
@@ -311,6 +330,16 @@ func parseSchedules(root string) ([]scheduleDef, error) {
 			}
 		}
 		switch {
+		case d.Due != nil:
+			if d.Fn == "" {
+				return nil, i18n.Errorf("%s：due 只能跑本机函数（fn）", "%s: due only runs a local function (fn)", f.Rel)
+			}
+			if d.At != "" || d.Every != "" {
+				return nil, i18n.Errorf("%s：写了 due 就不写 every / at（到点由表里的时间决定）", "%s: with due, leave out every / at (the times come from the table)", f.Rel)
+			}
+			if err := d.Due.parse(f.Rel); err != nil {
+				return nil, err
+			}
 		case d.At != "":
 			if !atRe.MatchString(d.At) {
 				return nil, i18n.Errorf("%s：at 要写成 HH:MM（比如 09:00）", "%s: at must be HH:MM (e.g. 09:00)", f.Rel)
@@ -322,7 +351,7 @@ func parseSchedules(root string) ([]scheduleDef, error) {
 			}
 			d.every = v
 		default:
-			return nil, i18n.Errorf("%s：要写 every（比如 \"30m\"、\"6h\"、\"1d\"）或 at（比如 \"09:00\"）", "%s: needs every (e.g. \"30m\", \"6h\", \"1d\") or at (e.g. \"09:00\")", f.Rel)
+			return nil, i18n.Errorf("%s：要写 every（比如 \"30m\"、\"6h\"、\"1d\"）、at（比如 \"09:00\"）或 due（按表里的时间字段）", "%s: needs every (e.g. \"30m\", \"6h\", \"1d\"), at (e.g. \"09:00\") or due (times from a table field)", f.Rel)
 		}
 		defs = append(defs, d)
 	}
@@ -372,9 +401,6 @@ func (s *Server) runSchedules(ctx context.Context) {
 }
 
 func (s *Server) tickSchedules() {
-	if !s.ready.Load() {
-		return
-	}
 	now := time.Now()
 	type job struct {
 		p schedProject
@@ -386,11 +412,17 @@ func (s *Server) tickSchedules() {
 		sc.mu.Lock()
 		p := s.proj(sp.ID, sp.Dir)
 		for _, d := range p.defs {
-			if !sp.Current && d.Fn == "" {
-				continue // 交给助手的只在打开这个项目时跑
+			if !sp.Open && d.Fn == "" {
+				continue // 交给助手的只在打开着的项目里跑
 			}
 			st := p.state[d.key()]
 			if st != nil && st.Disabled || p.running[d.key()] != nil {
+				continue
+			}
+			if d.Due != nil {
+				if now.Sub(p.polled[d.key()]) >= dueEvery {
+					due = append(due, job{sp, d})
+				}
 				continue
 			}
 			var last time.Time
@@ -419,36 +451,46 @@ func (s *Server) startScheduled(sp schedProject, d scheduleDef) bool {
 		return false
 	}
 	start := time.Now()
-	current := s.ready.Load() && s.ws.ProjectID == sp.ID
+	// 交给助手的在那个项目的视图里跑（它的助手、对话）
+	pv := s.openView(sp.ID)
+	current := pv != nil
 	run := &scheduleRun{StartedAt: start}
 	if current && (d.Task != "" || d.Prompt != "") {
 		// 对话 id 先定下来，跑的过程中界面的「查看对话」就能打开这一次的
 		run.ChatID = fmt.Sprintf("sched-%s-%d", plugin.ChatKey(key), start.Unix())
 	}
 	p.running[key] = run
+	if d.Due != nil {
+		p.polled[key] = start
+	}
 	sc.mu.Unlock()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), localRunTimeout)
 		defer cancel()
 		var err error
+		skip := false // due 这次没有到点的行：不记运行记录
 		switch {
+		case d.Due != nil:
+			var n int
+			n, run.Result, err = s.runDue(sp, d, start)
+			skip = n == 0 && err == nil
 		case (d.Task != "" || d.Prompt != "") && !current:
 			err = i18n.New("交给助手的定时任务只在打开这个项目时跑", "Scheduled assistant tasks only run while this project is open")
 		case d.Task != "":
 			var answer string
-			answer, err = s.execTask(d.Task, d.Input, run.ChatID, d.Name, true, start)
+			answer, err = pv.execTask(d.Task, d.Input, run.ChatID, d.Name, true, start)
 			run.Result = truncateRunes(answer, 500)
 		case d.Prompt != "":
 			var answer string
-			answer, err = s.runScheduledPrompt(d, run.ChatID, start)
+			answer, err = pv.runScheduledPrompt(d, run.ChatID, start)
 			run.Result = truncateRunes(answer, 500)
 		default:
 			var host localfn.Host
 			if host, err = s.projectHost(sp.ID); err == nil {
 				host.RunID = fmt.Sprintf("s%d", start.UnixNano())
 				var res any
-				res, err = localfn.Run(ctx, host, d.Fn, d.Input, func(localfn.Event) {})
+				res, err = s.runFn(ctx, host, d.Fn, d.Input, func(localfn.Event) {})
 				if err == nil {
 					b, _ := json.Marshal(res)
 					run.Result = truncateRunes(string(b), 500)
@@ -456,6 +498,12 @@ func (s *Server) startScheduled(sp schedProject, d scheduleDef) bool {
 			}
 		}
 		run.Ms, run.OK = time.Since(start).Milliseconds(), err == nil
+		if skip {
+			sc.mu.Lock()
+			delete(p.running, key)
+			sc.mu.Unlock()
+			return
+		}
 		if err != nil {
 			run.Error = err.Error()
 			log.Printf("定时任务 %s/%s 失败（%dms）：%v", sp.ID, key, run.Ms, err)
@@ -554,6 +602,15 @@ type scheduleInfo struct {
 	Fails    int          `json:"fails"`
 	// OnlyWhenOpen：别的项目里交给助手的任务（task / prompt），要打开那个项目才跑
 	OnlyWhenOpen bool `json:"only_when_open,omitempty"`
+	// Due：按表里的时间字段到点跑的（表、字段、接下来要跑的行）
+	Due *dueInfo `json:"due,omitempty"`
+}
+
+type dueInfo struct {
+	Table    string   `json:"table"`
+	Field    string   `json:"field"`
+	Upcoming []dueRow `json:"upcoming"`
+	More     int      `json:"more,omitempty"` // 没列出来的还有几行
 }
 
 // scheduleList 是一个项目的定时任务。
@@ -576,8 +633,17 @@ func (s *Server) scheduleList(sp schedProject) ([]scheduleInfo, error) {
 				last = st.Last.StartedAt
 			}
 		}
-		in.OnlyWhenOpen = !sp.Current && d.Fn == ""
-		if !in.Disabled && !in.OnlyWhenOpen {
+		in.OnlyWhenOpen = !sp.Open && d.Fn == ""
+		if d.Due != nil {
+			up := p.upcoming[d.key()]
+			in.Due = &dueInfo{Table: d.Due.Table, Field: d.Due.Field, Upcoming: up[:min(len(up), dueUpcomingMax)], More: max(len(up)-dueUpcomingMax, 0)}
+			if in.Due.Upcoming == nil {
+				in.Due.Upcoming = []dueRow{}
+			}
+			if len(up) > 0 && !in.Disabled {
+				in.NextAt = &up[0].At
+			}
+		} else if !in.Disabled && !in.OnlyWhenOpen {
 			n := d.next(last, now)
 			if n.Before(now) {
 				n = now
@@ -602,7 +668,7 @@ type scheduleGroup struct {
 // scheduleResponse：{ list, error（当前项目的，老界面用）, file, projects: [每个项目一组，当前的在前] }
 func (s *Server) scheduleResponse() map[string]any {
 	groups := []scheduleGroup{}
-	res := map[string]any{"list": []scheduleInfo{}, "error": "", "file": WorkspaceSchedulesDir + "/"}
+	res := map[string]any{"list": []scheduleInfo{}, "error": "", "file": WorkspaceSchedulesDir + "/", "server": s.cfg.Server}
 	for _, sp := range s.scheduleProjects() {
 		list, err := s.scheduleList(sp)
 		if sp.Current {
@@ -674,7 +740,7 @@ func (s *Server) apiSchedules(w http.ResponseWriter, r *http.Request, rest strin
 		sc.mu.Unlock()
 	case "run":
 		sc.mu.Unlock()
-		if !sp.Current && d.Fn == "" {
+		if !sp.Open && d.Fn == "" {
 			fail(w, http.StatusConflict, i18n.New("交给助手的定时任务只在打开这个项目时跑：先切到这个项目", "Scheduled assistant tasks only run while their project is open: switch to it first"))
 			return
 		}

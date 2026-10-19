@@ -44,8 +44,29 @@ func Find(bin string) string {
 			}
 		}
 	}
-	lookup.found[bin] = p
+	if p != "" { // 没找到不缓存：刚装好的命令（比如 Git for Windows）点「重新检测」马上找得到
+		lookup.found[bin] = p
+	}
 	return p
+}
+
+// GitBash 是 Git for Windows 带的 bash.exe（Claude Code 在 Windows 上靠它跑命令），按找到的 git.exe 往上找；不是 Windows 或没装是空。
+func GitBash() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	g := Find("git")
+	if g == "" {
+		return ""
+	}
+	// git.exe 在 <Git>\cmd、<Git>\bin 或 <Git>\mingw64\bin 下，bash 在 <Git>\bin
+	root := filepath.Dir(filepath.Dir(g))
+	for _, r := range []string{root, filepath.Dir(root)} {
+		if b := filepath.Join(r, "bin", "bash.exe"); isExec(b) {
+			return b
+		}
+	}
+	return ""
 }
 
 // Path 是登录 shell 的 PATH 加上常见的安装目录。codex 是 node 脚本，跑它也要这份 PATH 才找得到 node。
@@ -112,6 +133,8 @@ func loginPath() string {
 		parts = append(parts, filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".npm-global", "bin"))
 	} else {
 		parts = append(parts, filepath.Join(home, ".local", "bin"), filepath.Join(os.Getenv("APPDATA"), "npm"))
+		// Git for Windows 的默认安装位置（所有用户 / 只给当前用户）：装完后 App 进程的 PATH 还是旧的，直接看这两处
+		parts = append(parts, filepath.Join(os.Getenv("ProgramFiles"), "Git", "cmd"), filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Git", "cmd"))
 	}
 	seen := map[string]bool{}
 	var dirs []string

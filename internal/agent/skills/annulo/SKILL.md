@@ -1,6 +1,6 @@
 ---
 name: annulo
-description: Annulo 提供的基础能力和项目的约定。怎么把需求做成软件（按钮背后用本机函数、ctx.llm 还是交给助手的任务），项目的目录（ANNULO.md、tables/、local/、schedules/、tasks/、skills/、plugins/、user/、annulo.json），能力版本；同目录的文件讲细节：本机函数和 ctx（functions.md）、用本机 Chrome 操作网页（browser.md）、页面能调的接口和 page_errors（pages.md）、任务和定时任务（tasks.md）、git 版本、升级模板和冲突（git.md）、装 skill 和接 MCP（extend.md）。给项目加功能、改页面、写函数、装 skill 或 MCP 之前先读它。
+description: Annulo 提供的基础能力和项目的约定。怎么把需求做成软件（按钮背后用本机函数、ctx.llm 还是交给助手的任务），项目的目录（ANNULO.md、tables/、local/、schedules/、inboxes/、tasks/、skills/、plugins/、user/、annulo.json），能力版本；同目录的文件讲细节：本机函数和 ctx（functions.md）、用本机 Chrome 操作网页（browser.md）、页面能调的接口和 page_errors（pages.md）、任务、定时任务和收件箱（tasks.md）、git 版本、升级模板和冲突（git.md）、装 skill 和接 MCP（extend.md）。给项目加功能、改页面、写函数、装 skill 或 MCP 之前先读它。
 ---
 
 # Annulo 的项目
@@ -14,7 +14,7 @@ Annulo 只提供和业务无关的基础能力。**项目（工作目录）能�
 | `functions.md` | 本机函数 `local/*.ts`：写法、`ctx.*` 能用什么、试跑、日志、手机上用的云端版本 |
 | `browser.md` | `ctx.browser`：用本机 Chrome 操作没有开放接口的网站（登录、发布、采集） |
 | `pages.md` | 项目的页面：能调的本机接口、上传文件、密钥输入、页面标题、用 `page_errors` 查报错 |
-| `tasks.md` | 任务 `tasks/<id>.md`（交给助手的固定流程）和定时任务 `schedules/<id>.json` |
+| `tasks.md` | 任务 `tasks/<id>.md`（交给助手的固定流程）、定时任务 `schedules/<id>.json`、收件箱 `inboxes/<id>.json`（接外面发进来的 webhook） |
 | `git.md` | 项目的版本：`annulo push`、升级模板（`annulo template upgrade`）、解冲突、看历史、回滚 |
 | `extend.md` | 给 Annulo 装 skill、接 MCP |
 
@@ -36,6 +36,10 @@ Annulo 只提供和业务无关的基础能力。**项目（工作目录）能�
 **交给助手的按钮（任务、「交给助手」）都一个样子**：点了新开一段对话在后台跑，在右侧打开那段对话，按钮变成「进行中 · 看过程」，
 点了回到那段对话；跑完按钮恢复、页面重新拉数据。不要把话塞进用户当前的对话。
 
+**接着改你做出来的东西，回到做它的那段对话，不新开对话**：新开对话的按钮只给不需要之前上下文的新任务（写一篇新文章、出一批选题）。
+页面上要改某个结果（改这篇、给这条视频提意见），按钮是「继续对话」：保存函数把 `ctx.chat_id` 存进那条记录，页面用 `annulo:open-chat` 打开那段对话，
+用户在对话里直接说；不要在页面上弹框收意见再新开一段对话。任务文件里写清楚用户在这段对话里接着提要求时怎么做。原来的对话找不到时才新开。
+
 一次性的配置可以让助手做，但做完要存成配置，之后每次都由按钮直接执行。
 
 ## 项目的目录
@@ -43,7 +47,7 @@ Annulo 只提供和业务无关的基础能力。**项目（工作目录）能�
 | 文件 | 作用 |
 |---|---|
 | `ANNULO.md`（老项目叫 `SHUTTLE.md`） | 项目是什么、有哪些模块、先读哪个 skill。每段新对话都会放进系统提示 |
-| `tables/<表>.json` | 业务表，一张表一个文件，文件名就是表的 key：`{ name, desc, json_schema }`。Annulo 按它建表（文件变了自动补建），只放行声明过的表。加表就加一个文件 |
+| `tables/<表>.json` | 业务表，一张表一个文件，文件名就是表的 key：`{ name, desc, json_schema }`。Annulo 按它建表（文件变了自动补建），只放行声明过的表。加表就加一个文件。可选 `title_field`（引用标签显示哪个字段，默认找 title / name / subject / label）、`files_field`（`@表:id#n` 的 n 数哪个字段，默认 files / images / url） |
 | `local/*.ts` | 本机函数（`functions.md`） |
 | `schedules/<id>.json` | 定时任务（`tasks.md`） |
 | `tasks/<id>.md`、`prompts/<id>.md` | 任务和它的默认写法（`tasks.md`） |

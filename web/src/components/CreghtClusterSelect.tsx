@@ -4,7 +4,7 @@ import { getJSON, post } from '@/lib/api'
 import { Select } from '@/components/ui/select'
 import { t } from '@/lib/i18n'
 
-type Cluster = { host: string; name: string; logged_in: boolean; templates: number }
+type Cluster = { host: string; name: string; logged_in: boolean; templates: number; custom?: boolean }
 type State = { current: string; clusters: Cluster[] }
 
 /**

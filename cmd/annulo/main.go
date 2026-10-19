@@ -12,11 +12,20 @@ import (
 
 	"github.com/annulo/annulo/internal/app"
 	"github.com/annulo/annulo/internal/config"
+	"github.com/annulo/annulo/internal/extbridge"
 	"github.com/annulo/annulo/internal/version"
 )
 
 func main() {
 	version.FromBuildInfo()
+	// Chrome 拉起的 native host（用户 Chrome 里的 Annulo 插件要连 Annulo，见 internal/extbridge）
+	if extbridge.IsHostInvocation(os.Args) {
+		if err := runBrowserHost(os.Args[1]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := rootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "  ✗ "+err.Error())
 		os.Exit(1)
@@ -28,7 +37,7 @@ func rootCmd() *cobra.Command {
 	var noOpen, appFlag bool
 	root := &cobra.Command{
 		Use:           "annulo",
-		Short:         "Annulo：AI 为你造的，都囤在这儿。打开项目，让助手做页面、表和脚本（老名字 shuttle 也能用）",
+		Short:         "Annulo：构建你自己的工作台。打开项目，让助手做页面、表和脚本（老名字 shuttle 也能用）",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -50,8 +59,8 @@ func serve(webDir string, open, appFlag bool) error {
 	if appFlag {
 		appMode(func() { close(quit) })
 		// 已经有一个 Shuttle 在跑（终端里开的，或者另一个 App 的）：窗口直接连它，这里不用再起
-		if cfg, err := config.Load(); err == nil && app.Running(cfg.Addr()) {
-			fmt.Fprintf(os.Stderr, "已有 Annulo 在 %s 运行，直接用它\n", cfg.Addr())
+		if cfg, err := config.Load(); err == nil && app.Running(cfg.LocalAddr()) {
+			fmt.Fprintf(os.Stderr, "已有 Annulo 在 %s 运行，直接用它\n", cfg.LocalAddr())
 			return nil
 		}
 	}

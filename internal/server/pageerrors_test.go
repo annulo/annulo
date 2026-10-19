@@ -12,7 +12,7 @@ import (
 )
 
 func TestPageErrors(t *testing.T) {
-	s := &Server{ws: &creght.Workspace{ProjectID: "p1"}}
+	s := newTestServer(nil, &creght.Workspace{ProjectID: "p1"}, nil)
 	call := func(method, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		s.apiPage(rec, httptest.NewRequest(method, "/_shuttle/api/ui/page", strings.NewReader(body)))

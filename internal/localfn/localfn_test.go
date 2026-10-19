@@ -468,3 +468,68 @@ func TestChatID(t *testing.T) {
 		t.Fatalf("没有对话时应是空字符串：%s", b)
 	}
 }
+
+func TestUpload(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "u.ts", `
+export async function ok(_: any, ctx: any) {
+  const a = await ctx.upload({ url: 'https://files.example.com/x/cover%20img.png?sig=1' })
+  const b = await ctx.upload({ url: 'https://files.example.com/x/blob?sig=1', name: 'pic' })
+  let bad = ''
+  try { await ctx.upload({ url: 'file:///etc/passwd' }) } catch (e: any) { bad = e.message }
+  let notObj = ''
+  try { await ctx.upload('https://a.com/x.png') } catch (e: any) { notObj = e.message }
+  return { a, b, bad, notObj }
+}
+`)
+	h := host(dir, &memDB{})
+	png := []byte("\x89PNG\r\n\x1a\n0000")
+	h.Download = func(_ context.Context, url, dst string) (string, error) {
+		ct := "image/png"
+		if strings.Contains(url, "blob") {
+			ct = "application/octet-stream" // 存储服务常给这个：按内容猜
+		}
+		return ct, os.WriteFile(dst, png, 0o600)
+	}
+	var names, types []string
+	h.Upload = func(_ context.Context, name, ctype string, b []byte) (map[string]any, error) {
+		names, types = append(names, name), append(types, ctype)
+		return map[string]any{"url": "https://cdn/" + name, "size": len(b)}, nil
+	}
+	res, err := Run(context.Background(), h, "u.ok", nil, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := res.(map[string]any)
+	if m["a"].(map[string]any)["url"] != "https://cdn/cover img.png" || names[1] != "pic.png" || types[1] != "image/png" || !strings.Contains(m["bad"].(string), "http / https") || !strings.Contains(m["notObj"].(string), "要传对象") {
+		t.Fatalf("结果不对：%#v %v %v", m, names, types)
+	}
+}
+
+// ctx.llm 带 provider / model / web_search：交给 LLMAsk；带 web_search 返回对象，不带返回文字
+func TestLLMAsk(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.ts", `export async function run(_: unknown, ctx: any) {
+  const r = await ctx.llm({ prompt: 'q', provider: 'codex', web_search: true })
+  const t = await ctx.llm({ prompt: 'q2', model: 'creght:x' })
+  const plain = await ctx.llm('q3')
+  return { text: r.text, url: r.sources[0].url, n: r.searches.length, model: r.model, t, plain }
+}`)
+	h := host(dir, &memDB{})
+	var got []LLMAsk
+	h.LLMAsk = func(_ context.Context, q LLMAsk) (*LLMAnswer, error) {
+		got = append(got, q)
+		return &LLMAnswer{Text: "ans:" + q.Prompt, Sources: []LLMSource{{URL: "https://a.com"}}, Searches: []LLMSearch{{Type: "search", Queries: []string{"x"}, Sources: []string{}}}, Model: q.Provider + q.Model}, nil
+	}
+	res, err := Run(context.Background(), h, "a.run", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	if want := `{"model":"codex","n":1,"plain":"llm:q3","t":"ans:q2","text":"ans:q","url":"https://a.com"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	if len(got) != 2 || !got[0].WebSearch || got[0].Provider != "codex" || got[1].WebSearch || got[1].Model != "creght:x" {
+		t.Fatalf("asks %+v", got)
+	}
+}

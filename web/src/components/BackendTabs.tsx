@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { attachBackendHistory } from '@/lib/backendHistory'
+import { postToPage } from '@/lib/brand'
 import { cn } from '@/lib/utils'
 import { t } from '@/lib/i18n'
 
@@ -65,6 +66,9 @@ export function BackendFrame({
       } catch {
         fw = null
       }
+      // 主题以外壳为准：页面自己按记住的、系统的设过一次，偶尔和外壳对不上（有人看到外壳黑、后台白），加载完再告诉它一次
+      const theme = document.documentElement.getAttribute('data-theme')
+      if (theme === 'light' || theme === 'dark') postToPage(f.contentWindow, { type: 'shuttle:theme', theme })
     }
     attach()
     f.addEventListener('load', attach)

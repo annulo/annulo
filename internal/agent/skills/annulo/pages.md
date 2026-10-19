@@ -17,7 +17,8 @@
 | `GET local/schedules` | 定时任务和每个任务上次运行的结果：`list: [{ id, fn, task, prompt, name, every, at, disabled, running, next_at, last: { started_at, ok, error, ms, result, chat_id } }]` |
 | `GET local/llm/providers` | 设置 → 模型 里的服务商和模型（不含 key），页面上做「选哪个服务商 / 模型」用；本机函数里是 `ctx.llm.providers()` |
 | `POST local/upload` | 上传文件，拿到公开地址（multipart，字段名 `file`，单个最大 200 MB）。在线项目传到项目站点的 creght 素材里；离线项目存在本机，地址是 `/_annulo/uploaded/…`（不带端口，原样存进表、写进页面）。返回 `{ url, path, size, content_type, existed }`（`existed` 表示同样的内容以前传过）。要给外部平台用的文件走它。**你自己要传本机文件（生成的图、下载的图）用 `annulo upload <文件…>`**，打印地址（`--json` 带大小、类型），走的是同一套 |
-| `POST local/files` | 把文件存在**本机**、不传云端：请求体就是文件本身（`fetch(…, { method: 'POST', body: file, headers: { 'X-Annulo': '1', 'X-Filename': encodeURIComponent(file.name), 'content-type': file.type } })`，要显示进度就用 XMLHttpRequest），单个最大 8 GB，90 天后清理。返回 `{ ref: 'local:<name>', url: '/_annulo/files/<name>', filename, size }`：`ref` 存进表、交给本机函数（比如 `b.upload`），`url` 给页面预览（`<video src>`）。只在本机用的大文件走它；`DELETE local/files/<name>` 删除 |
+| `POST local/files` | 把文件存在**本机**、不传云端：请求体就是文件本身（`fetch(…, { method: 'POST', body: file, headers: { 'X-Annulo': '1', 'X-Filename': encodeURIComponent(file.name), 'content-type': file.type } })`，要显示进度就用 XMLHttpRequest），单个最大 8 GB，超过 90 天、业务表里也没引用（`local:<name>` 或预览地址）的会被清理。返回 `{ ref: 'local:<name>', url: '/_annulo/files/<name>', filename, size }`：`ref` 存进表、交给本机函数（比如 `b.upload`），`url` 给页面预览（`<video src>`）。只在本机用的大文件走它；`DELETE local/files/<name>` 删除。**你自己做好的文件（渲染的视频）用 `annulo upload --local <文件…>`**，打印 `local:<name>`，走的是同一套 |
+| `POST local/open { path: 'local:<name>' }` | 用系统默认程序打开项目的本机文件（网页用系统浏览器，图片、视频、音频、PDF 用对应的程序；可执行的文件不开）。服务端部署时不在用户电脑上开，返回 `{ open_url }`，页面用 `window.open(open_url)` 在新标签页打开（本机文件的响应带 CSP sandbox） |
 | `PUT local/secrets { name, value }` | 写一个本机密钥（只能写，读不回来）。见下面「页面上让用户填密钥」 |
 | `GET local/secrets?names=A,B` | 这几个密钥配了没有：`{ set: { A: true, B: false } }`，不返回值 |
 | `GET/POST/PATCH/DELETE db/<表>` | 读写业务表（`?id=` 定位一行）。只放行 `tables/` 里声明的表 |
@@ -26,9 +27,20 @@
 **外站图片**：有防盗链的图床，页面里直接写 `<img src>` 会返回 403。改成 `<img src={'/_annulo/img?url=' + encodeURIComponent(图片地址)}>`，
 由本机 Annulo 不带 Referer 去取，缓存 7 天。只返回图片。
 
+**引用**：`@<表>:<id>` 指一条记录，`@<表>:<id>#<n>` 指这条记录文件列表里的第 n 个（从 1 开始）。页面上给列表行、卡片、大图放「复制引用」（复制的就是这串文字，多选时一行一个），用户贴进对话交给助手；Annulo 在对话里把它显示成「表名 · 标题」的标签。`POST refs/resolve { refs }` 返回每条的 `{ table_name, title, thumb, mime, missing }`，页面要显示引用时用。
+
+**数据变了就重读**：Annulo 每次写业务表（页面的 `db/<表>`、本机函数的 `ctx.db`、你跑的 `annulo run`、定时任务）后，会给打开着的页面发 `window` 的 `db:changed` 事件，`detail.table` 是表名（Annulo 推来的带 `remote: true`），一批里几张表就发几个。
+页面按自己用到的表订阅它重读数据，不要靠定时轮询，也不要整页刷新：`window.addEventListener('db:changed', (e) => { if (['articles', 'assets'].includes(e.detail.table)) reload() })`。
+页面自己写了表也要发同样的事件，别的组件跟着重读。
+
 **给 Annulo 外壳发消息**（`window.parent.postMessage(…, location.origin)`）：
 `{ type: 'annulo:open-chat', chat_id }` 在右侧打开某段对话（比如任务、定时任务开的那段）；
+`{ type: 'annulo:compose', text }` 在右侧新开一段空对话，把 `text` 填进输入框、不发送，用户自己接着写（比如「在对话里改」还没有对话时，填一个这条记录的引用 `@<表>:<id> `；能力版本 47 起）；
 `{ type: 'annulo:navigate', view: 'settings', hash: '#secrets' }` 打开 Annulo 的设置页。
+
+**部署在服务器上时（几个人共用，有角色）**：`GET status` 的 `user` 是 `{ name, role }`（`admin` / `member` / `viewer`，本机版是 null）。
+只读的人（`viewer`）写表、跑任务、交给助手都会被拒（403），本机函数只能跑文件里 `export const readonly = ['…']`（或 `cloud`）列出的。
+页面按 `role` 收起这些按钮，别让只读的人点了才报错；只读的人也要能用的统计、列表函数，加进 `readonly`。
 
 在线项目的页面单独在浏览器里打开时，没有这些本机接口，页面会改走站点 Func（免费版每天只有 200 次，用完返回 402），本机函数只有 `cloud` / `remote` 的能用（见 `functions.md`）。
 
@@ -44,6 +56,13 @@ Annulo 顶栏的标签页显示页面的网页标题（`document.title`）。页
 - 每个页面设自己的标题，和导航里的名字一致：页面文件导出 `generateMetadata`，返回 `{ title }`。不要在 `talizen.config.ts` 的 `metadata` 里给全站写一个固定标题，那样每个标签都会显示成它。
 - 页面里切换视图但不整页跳转的（导航改 state 或查询参数），切换时同步改 `document.title`。
 - 加新页面、改导航名字时，一起改标题。
+
+## 在对话里给页面链接
+
+回复里提到用户能在页面上看的东西（刚做好的功能、写好的一条记录、要处理的东西），就写成 `[按钮上的字](/?view=content&article=<id>)`，**提到哪里写到哪里**，不要攒到最后统一给一个：
+地址是页面实际的路径和查询参数（以 `/` 开头，不带域名、端口，和 `page_errors` 的 `path` 一样；有空格时整个地址用 `<>` 包起来），先读 ANNULO.md 和页面入口确认参数名。
+按钮上的字写用户看得懂的名字（标题、文件名），不写「点这里」。模板在 ANNULO.md 里列自己有哪些页面和参数，通用的写法不用再写。
+对话里它显示成按钮，点了左侧当前标签跳过去，⌘ 点在新标签打开。外部网站照常写完整的 https 链接。
 
 ## 用 page_errors 查页面报错
 

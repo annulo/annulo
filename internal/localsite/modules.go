@@ -78,13 +78,18 @@ func (c *moduleCache) get(key string) *compiled {
 }
 
 func (c *moduleCache) put(key string, v *compiled, disk bool) {
+	// 出错的不缓存：缓存按「路径 + 内容」认，但「找不到 import 的文件」取决于别的文件在不在，
+	// 补上那个文件后这个文件内容没变，缓存着的失败会一直报（模板一次写几个文件时，先写进来的 import 了还没写的）
+	if v.Error != "" {
+		return
+	}
 	c.mu.Lock()
 	if c.mem == nil || len(c.mem) > 4000 {
 		c.mem = map[string]*compiled{}
 	}
 	c.mem[key] = v
 	c.mu.Unlock()
-	if disk && v.Error == "" {
+	if disk {
 		if b, err := json.Marshal(v); err == nil {
 			p := filepath.Join(c.dir, key[:2], key+".json")
 			_ = os.MkdirAll(filepath.Dir(p), 0o755)

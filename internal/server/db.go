@@ -19,7 +19,7 @@ import (
 
 type tableIDs struct {
 	mu  sync.Mutex
-	ids map[string]string
+	ids map[string]string // 项目 id + "/" + 表 key → 表 id
 }
 
 func (s *Server) tableID(ctx context.Context, key string) (string, error) {
@@ -48,12 +48,35 @@ type projectDB struct {
 	tids      *tableIDs
 	isTable   func(key string) bool // 这个项目 tables/ 声明了这张表没有
 	tableErr  func(fallback error) error
+	ensure    func(ctx context.Context) error // 补齐声明了、平台上还没有的表；当前打开的在线项目才有
+	onWrite   func(ctx context.Context, table string) // 写成功了：告诉打开着的页面这张表变了（datachanged.go）
+}
+
+func (p *projectDB) wrote(ctx context.Context, table string) {
+	if p.onWrite != nil {
+		p.onWrite(ctx, table)
+	}
 }
 
 func (p *projectDB) tableID(ctx context.Context, key string) (string, error) {
+	id, err := p.lookupTableID(ctx, key)
+	if err != nil && p.ensure != nil && p.isTable(key) {
+		// 刚建的项目：页面可能比补表先到（补表要一两秒），等补表跑完再找一次。
+		// 要在 lookupTableID 外面等：EnsureTables 清缓存时也要拿 tids 的锁
+		if eerr := p.ensure(ctx); eerr != nil {
+			return "", err
+		}
+		id, err = p.lookupTableID(ctx, key)
+	}
+	return id, err
+}
+
+func (p *projectDB) lookupTableID(ctx context.Context, key string) (string, error) {
 	p.tids.mu.Lock()
 	defer p.tids.mu.Unlock()
-	if id := p.tids.ids[key]; id != "" {
+	// 缓存按项目分开：切项目前发出的请求可能在清空缓存之后才查到旧项目的表 id，只按 key 存会让新项目一直用旧项目的表
+	ck := p.projectID + "/" + key
+	if id := p.tids.ids[ck]; id != "" {
 		return id, nil
 	}
 	id, err := p.c.TableID(ctx, p.projectID, key)
@@ -63,16 +86,28 @@ func (p *projectDB) tableID(ctx context.Context, key string) (string, error) {
 	if p.tids.ids == nil {
 		p.tids.ids = map[string]string{}
 	}
-	p.tids.ids[key] = id
+	p.tids.ids[ck] = id
 	return id, nil
 }
 
 // cur 是当前打开的项目的 projectDB。
 func (s *Server) cur() *projectDB {
-	if s.ws.Offline && s.localData != nil {
-		return &projectDB{c: s.localData, projectID: s.ws.ProjectID, tids: &s.tids, isTable: s.isOpsTable, tableErr: s.tableErr}
+	if s.ws.Offline {
+		// 业务表在 Annulo 这边（SQLite / Postgres）。启动时没打开（数据库还没起来），用到时再试；还是不行就明确报错，不落到 creght 上
+		s.dataMu.Lock()
+		if s.localData == nil {
+			db, err := s.openLocalData(s.ws.ProjectID)
+			if err != nil {
+				s.dataMu.Unlock()
+				return &projectDB{c: errStore{i18n.Errorf("项目的数据库连不上：%v", "Can't reach the project's database: %v", err)}, projectID: s.ws.ProjectID, tids: &s.tids, isTable: s.isOpsTable, tableErr: s.tableErr, onWrite: s.dataChanged}
+			}
+			s.localData = db
+		}
+		db := s.localData
+		s.dataMu.Unlock()
+		return &projectDB{c: db, projectID: s.ws.ProjectID, tids: &s.tids, isTable: s.isOpsTable, tableErr: s.tableErr, onWrite: s.dataChanged}
 	}
-	return &projectDB{c: s.creght, projectID: s.ws.ProjectID, tids: &s.tids, isTable: s.isOpsTable, tableErr: s.tableErr}
+	return &projectDB{c: s.creght, projectID: s.ws.ProjectID, tids: &s.tids, isTable: s.isOpsTable, tableErr: s.tableErr, ensure: s.EnsureTables, onWrite: s.dataChanged}
 }
 
 type row = map[string]any
@@ -90,11 +125,15 @@ func (s *Server) dbQuery(ctx context.Context, table string, q creght.RecordQuery
 		out, _, _, err := s.dbQueryPage(ctx, table, q)
 		return out, err
 	}
-	tid, err := s.tableID(ctx, table)
+	if !s.ready.Load() {
+		return nil, i18n.New("还没有初始化运营后台", "The back office isn't initialized yet")
+	}
+	p := s.cur() // 表 id 和读记录用同一个项目，中途切了项目也不会拿 A 项目的表 id 去读 B 项目
+	tid, err := p.tableID(ctx, table)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := s.cur().c.ListRecords(ctx, s.ws.ProjectID, tid, q)
+	recs, err := p.c.ListRecords(ctx, p.projectID, tid, q)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +231,7 @@ func (p *projectDB) create(ctx context.Context, table string, m row) (row, error
 		return nil, err
 	}
 	m["id"] = id
+	p.wrote(ctx, table)
 	return m, nil
 }
 
@@ -221,6 +261,7 @@ func (p *projectDB) patch(ctx context.Context, table, id string, patch row) (row
 		return nil, err
 	}
 	m["id"] = id
+	p.wrote(ctx, table)
 	return m, nil
 }
 
@@ -229,7 +270,11 @@ func (p *projectDB) delete(ctx context.Context, table, id string) error {
 	if err != nil {
 		return err
 	}
-	return p.c.DeleteRecord(ctx, p.projectID, tid, id)
+	if err := p.c.DeleteRecord(ctx, p.projectID, tid, id); err != nil {
+		return err
+	}
+	p.wrote(ctx, table)
+	return nil
 }
 
 func str(v any) string {
@@ -248,7 +293,7 @@ func (s *Server) apiDB(w http.ResponseWriter, r *http.Request, table string) {
 		fail(w, http.StatusNotFound, s.tableErr(i18n.Errorf("没有这张表：%s", "No such table: %s", table)))
 		return
 	}
-	ctx := r.Context()
+	ctx := byPage(r.Context()) // 页面自己写的：页面那边已经知道了（datachanged.go）
 	readBody := func() (row, error) {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 2<<20))
 		var m row
@@ -298,4 +343,26 @@ func (s *Server) apiDB(w http.ResponseWriter, r *http.Request, table string) {
 	default:
 		fail(w, http.StatusMethodNotAllowed, i18n.New("不支持的方法", "Method not supported"))
 	}
+}
+
+// errStore：业务表的存储打不开时，每个操作都报同一个错（不落到别的存储上）。
+type errStore struct{ err error }
+
+func (e errStore) TableID(context.Context, string, string) (string, error) { return "", e.err }
+func (e errStore) QueryRecords(context.Context, string, string, creght.RecordQuery) ([]creght.Record, string, int64, error) {
+	return nil, "", 0, e.err
+}
+func (e errStore) ListRecords(context.Context, string, string, creght.RecordQuery) ([]creght.Record, error) {
+	return nil, e.err
+}
+func (e errStore) CreateRecord(context.Context, string, string, any) (string, error) {
+	return "", e.err
+}
+func (e errStore) GetRecord(context.Context, string, string, string) (*creght.Record, error) {
+	return nil, e.err
+}
+func (e errStore) UpdateRecord(context.Context, string, string, string, any) error { return e.err }
+func (e errStore) DeleteRecord(context.Context, string, string, string) error      { return e.err }
+func (e errStore) AggregateRecords(context.Context, string, string, map[string]any) ([]map[string]any, bool, error) {
+	return nil, false, e.err
 }

@@ -99,15 +99,23 @@ async function apply(u) {
       await register(p, mods[p].url);
     }
     let failed = false;
-    try { R.performReactRefresh(); } catch (e) { if (!hooksError(e && e.message)) throw e; failed = true; }
-    // 路由的错误边界在 effect 里才上报，等一会儿再看
-    await new Promise((r) => setTimeout(r, 300));
-    if (failed || errors.slice(seen).some((e) => hooksError(e.message))) {
-      console.warn("[shuttle] hooks changed, remounting the page");
-      if (root) { root.unmount(); root = null; } // 新的 root：不复用旧 fiber，hooks 从头来（页面状态会丢）
-      await mount(u.entry);
-      // 救回来了：这次的 hooks 报错不算页面出错（外壳读这个列表提示「后台页面出错了」）
-      for (let i = errors.length - 1; i >= seen; i--) if (hooksError(errors[i].message) || hooksError(errors[i].detail)) errors.splice(i, 1);
+    // hooks 的报错先暂存（html.go 的 push），判断完再决定记不记
+    const held = (window.__SHUTTLE_HOLD__ = []);
+    try {
+      try { R.performReactRefresh(); } catch (e) { if (!hooksError(e && e.message)) throw e; failed = true; }
+      // 路由的错误边界在 effect 里才上报，等一会儿再看
+      await new Promise((r) => setTimeout(r, 300));
+      if (failed || held.length || errors.slice(seen).some((e) => hooksError(e.message))) {
+        console.warn("[shuttle] hooks changed, remounting the page");
+        if (root) { root.unmount(); root = null; } // 新的 root：不复用旧 fiber，hooks 从头来（页面状态会丢）
+        await mount(u.entry);
+        // 救回来了：这次的 hooks 报错不算页面出错（外壳读这个列表提示「后台页面出错了」）
+        for (let i = errors.length - 1; i >= seen; i--) if (hooksError(errors[i].message) || hooksError(errors[i].detail)) errors.splice(i, 1);
+        held.length = 0;
+      }
+    } finally {
+      window.__SHUTTLE_HOLD__ = null;
+      for (const it of held) errors.push(it); // 没救回来（或者中途出错）：照常记进列表
     }
     return;
   }
@@ -118,6 +126,13 @@ let chain = Promise.resolve();
 const es = new EventSource("/_client/events");
 es.onmessage = (e) => {
   const u = JSON.parse(e.data);
+  // 业务表变了（internal/server/datachanged.go）：每张表发一个 db:changed，页面按表重读；
+  // 有不是页面自己写的（助手、本机函数、定时任务），再给只认 shuttle:refresh 的老模板发一个
+  if (u.type === "db") {
+    for (const table of u.tables || []) window.dispatchEvent(new CustomEvent("db:changed", { detail: { table, remote: true } }));
+    if (u.others) window.postMessage({ type: "shuttle:refresh", tables: u.tables }, location.origin);
+    return;
+  }
   chain = chain.then(() => apply(u)).catch((err) => { console.error("[shuttle] hot update failed, reloading", err); location.reload(); });
 };
 `

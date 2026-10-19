@@ -35,7 +35,7 @@ var cloudMark = brand.CloudMarkers[0]
 
 // cloudCtx 是云端那份 ctx：站点 Func 的 ctx 只挑这几样给出去。
 const cloudCtx = `
-const __forbid = ['secrets', 'fetchAll', 'html', 'oauth', 'browser', 'llm', 'exec', 'agent']
+const __forbid = ['secrets', 'fetchAll', 'html', 'oauth', 'browser', 'llm', 'exec', 'agent', 'upload']
 const __sys = ['id', 'sort', 'created_at', 'updated_at', 'table_id', 'user_id']
 // 站点 Func 的宿主能力出错时抛的是字符串，本机函数都按 Error 读 e.message：换成 Error
 const __err = (e) => (e instanceof Error ? e : new Error(String(e)))
@@ -314,4 +314,53 @@ func WriteCloud(workDir string) ([]string, error) {
 	}
 	sort.Strings(written)
 	return written, nil
+}
+
+// IsNode：这个函数（文件.函数）在服务端部署时要整个派给节点（用户电脑）跑：文件里 export const node = [...] 列了它。
+// 只放真要用户电脑的浏览器、网络的（发布、采集）；只是要密钥、连接、模型的（手机上为此声明了 remote）在服务器上就能跑，不放。
+func IsNode(workDir, name string) (bool, error) {
+	return listed(workDir, name, "node")
+}
+
+// IsReadonly：这个函数（文件.函数）能不能给只读角色跑（服务端部署，docs/server-and-multi-project.md「账号」）：
+// 文件里 export const readonly = [...] 列了它，或者列在 cloud 里（cloud 的函数本来就只读表）。
+func IsReadonly(workDir, name string) (bool, error) {
+	return listed(workDir, name, "readonly", "cloud")
+}
+
+// listed：函数有没有列在文件导出的某个名单里（export const <key> = ['…']）。
+func listed(workDir, name string, keys ...string) (bool, error) {
+	file, fn, ok := strings.Cut(name, ".")
+	if !ok {
+		return false, nil
+	}
+	path, err := source(workDir, file)
+	if err != nil {
+		return false, err
+	}
+	code, err := compile(path)
+	if err != nil {
+		return false, err
+	}
+	vm := goja.New()
+	exports, err := load(vm, code)
+	if err != nil {
+		return false, err
+	}
+	for _, key := range keys {
+		v := exports.Get(key)
+		if v == nil || goja.IsUndefined(v) {
+			continue
+		}
+		var names []string
+		if vm.ExportTo(v, &names) != nil {
+			continue
+		}
+		for _, n := range names {
+			if n == fn {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

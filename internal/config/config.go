@@ -21,8 +21,17 @@ type Config struct {
 	Host string
 	Port int
 	// PortFixed：端口是环境变量指定的，被占了就报错，不自动换（见 app.listen）
-	PortFixed bool `json:"-"`
+	PortFixed bool   `json:"-"`
 	Dir       string // ~/.shuttle
+
+	// 服务端部署（docs/server-and-multi-project.md「服务端部署」），都从环境变量来、不落盘：
+	// Server：ANNULO_MODE=server，监听所有网卡、要登录、按角色限制；DatabaseURL：DATABASE_URL，业务表存 Postgres；
+	// PublicURL：ANNULO_PUBLIC_URL，用户在浏览器里打开的地址（https://annulo.example.com）
+	Server      bool   `json:"-"`
+	DatabaseURL string `json:"-"`
+	PublicURL   string `json:"-"`
+	// TLSPort：服务端部署时 HTTPS 的端口（ANNULO_TLS_PORT，镜像里 8443、映射成 443）；证书由 Annulo 自己签（server/domain.go）。0 = 不开 HTTPS
+	TLSPort int `json:"-"`
 
 	// Providers 是用户自己加的服务商（协议 + 地址 + key）。内置的 creght 服务商不在这里：
 	// 它用登录的 creght 账号，地址和凭据运行时才取（见 agent.creghtEndpoint）。
@@ -37,6 +46,13 @@ type Config struct {
 	AutoTitle *bool `json:"auto_title,omitempty"`
 	// TitleModel 是起标题用的模型（Models 里的 ID 或 "creght:<模型 id>"）；空或者这个模型不在了，用当前对话的模型。
 	TitleModel string `json:"title_model,omitempty"`
+	// BrowserModel 是浏览器助手（本机函数里的 b.act，docs/browser-act.md）用的模型，同 TitleModel；空或者不在了，用当前对话的模型
+	BrowserModel string `json:"browser_model,omitempty"`
+	// TitleThinking / BrowserThinking 是起名、浏览器助手调模型时的思考强度（ThinkingLevels 里的一档），空 = off：这两件事要快
+	TitleThinking   string `json:"title_thinking,omitempty"`
+	BrowserThinking string `json:"browser_thinking,omitempty"`
+	// BrowserDebug：浏览器助手把每一步发给模型的内容、模型的回复和耗时写进运行日志（调试用，默认关）
+	BrowserDebug bool `json:"browser_debug,omitempty"`
 	// DisabledProviders 是关掉的服务商（creght 平台、本机 agent claude / codex…）：它的模型不出现在列表和选择菜单里，
 	// 当前模型在里面就回到默认。只关模型，creght 账号、MCP 这些照常用。
 	DisabledProviders []string `json:"disabled_providers,omitempty"`
@@ -50,12 +66,18 @@ type Config struct {
 	Creght string `json:"creght,omitempty"`
 	// RemoteCalls：允许远程调用这台电脑（设置 → 远程访问）。打开后 Shuttle 连平台，在手机、别的电脑上点发布、采集转到这里跑（internal/relay）。默认关。
 	RemoteCalls bool `json:"remote_calls,omitempty"`
+	// RemoteTunnel：在手机上打开这台电脑的 Annulo（设置 → 远程访问，docs/mobile-remote.md「远程访问：隧道」）。打开后 Annulo 连 creght 建隧道。默认关。
+	RemoteTunnel bool `json:"remote_tunnel,omitempty"`
 	// Offline：用户选了不登录、离线使用（登录页上点的）。项目可以是离线的（数据在本机），以后随时能登录 creght。
 	Offline bool `json:"offline_mode,omitempty"`
 	// TemplateSources：自己加的 git 模板，每项是 <仓库地址>[#<子目录>]，版本是仓库里的 semver tag（docs/annulo-plan.md 第 3 步）。
 	TemplateSources []string `json:"template_sources,omitempty"`
 	// RenderCDN：不连 creght 时页面的包（react、talizen…）从哪个 CDN 加载，要和 esm.sh 同一套 URL 写法。空是 https://esm.sh。
 	RenderCDN string `json:"render_cdn,omitempty"`
+	// CreghtCustom：自己部署的 creght（地址 → 名字），用管理员令牌连（设置 → 连接）
+	CreghtCustom map[string]string `json:"creght_custom,omitempty"`
+	// Node：这台电脑作为节点连到服务端部署的 Annulo（设置 → 节点，docs/server-and-multi-project.md「浏览器：节点」）
+	Node NodeConfig `json:"node,omitempty"`
 }
 
 // CreghtProvider 是内置服务商的 id：creght 平台的模型，登录了就能用，按平台积分计费。
@@ -226,6 +248,18 @@ func (l LLM) Ready() error {
 
 func Load() (*Config, error) {
 	c := &Config{Host: "127.0.0.1", Port: 7799, Dir: brand.DataDir()} // ~/.annulo（老的 ~/.shuttle 第一次会迁过来）
+	c.Server = brand.Env("MODE") == "server"
+	c.DatabaseURL = brand.Env("DATABASE_URL")
+	if c.DatabaseURL == "" {
+		c.DatabaseURL = os.Getenv("DATABASE_URL")
+	}
+	c.PublicURL = strings.TrimRight(brand.Env("PUBLIC_URL"), "/")
+	if c.Server {
+		c.Host = "0.0.0.0" // 服务器上：容器外、反向代理要连得进来
+		if v, err := strconv.Atoi(brand.Env("TLS_PORT")); err == nil && v > 0 {
+			c.TLSPort = v
+		}
+	}
 	if v := brand.Env("HOST"); v != "" {
 		c.Host = v
 	}
@@ -305,6 +339,31 @@ func (c *Config) BackendID() string {
 	return legacyProject(c.legacyDir())
 }
 
+// MigrateLegacyBackend 把早期只有一个项目时的 <数据目录>/backend 挪到 backends/<项目 id>，所有项目都在 backends/ 下，
+// 当前打开哪个只看 config.json 的 backend。服务启动时调（只在服务里调：命令行跑的时候服务可能正开着这个目录）。
+// backends 下已经有同名目录就不动，照旧认老位置。
+func (c *Config) MigrateLegacyBackend() error {
+	p := legacyProject(c.legacyDir())
+	if p == "" {
+		return nil
+	}
+	dst := filepath.Join(c.Dir, "backends", p)
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(c.legacyDir(), dst); err != nil {
+		return err
+	}
+	if c.Backend == "" { // 早期版本没记当前项目，靠的就是老目录
+		c.Backend = p
+		return c.Save()
+	}
+	return nil
+}
+
 // LegacyProject 是早期 ~/.shuttle/backend 对应的项目 id，没有就是空。
 func (c *Config) LegacyProject() string { return legacyProject(c.legacyDir()) }
 
@@ -350,27 +409,56 @@ func (c *Config) migrateProviders() {
 	}
 }
 
+// NodeConfig：服务器地址（https://annulo.example.com）、服务器上生成的节点令牌、开没开
+type NodeConfig struct {
+	URL     string `json:"url,omitempty"`
+	Token   string `json:"token,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"`
+}
+
 func (c *Config) Addr() string { return fmt.Sprintf("%s:%d", c.Host, c.Port) }
+
+// LocalAddr 是本机连这个服务的地址（命令行、给外部 agent 的 MCP）：监听所有网卡时用 127.0.0.1。
+func (c *Config) LocalAddr() string {
+	if c.Host == "0.0.0.0" || c.Host == "::" || c.Host == "" {
+		return fmt.Sprintf("127.0.0.1:%d", c.Port)
+	}
+	return c.Addr()
+}
+
+func nodeOrNil(n NodeConfig) *NodeConfig {
+	if n == (NodeConfig{}) {
+		return nil
+	}
+	return &n
+}
 
 // Save 把配置写回 config.json（0600：里面可能有直接填的 API key）。
 // 只写文件里该有的字段，环境变量那部分不落盘。
 func (c *Config) Save() error {
 	b, err := json.MarshalIndent(struct {
-		Providers   []Provider `json:"providers"`
-		Models      []LLM      `json:"models"`
-		Active      string     `json:"active_model,omitempty"`
-		Thinking    string     `json:"thinking,omitempty"`
-		AutoTitle   *bool      `json:"auto_title,omitempty"`
-		TitleModel  string     `json:"title_model,omitempty"`
-		Disabled    []string   `json:"disabled_providers,omitempty"`
-		Backend     string     `json:"backend,omitempty"`
-		Language    string     `json:"language,omitempty"`
-		Creght      string     `json:"creght,omitempty"`
-		RemoteCalls bool       `json:"remote_calls,omitempty"`
-		Offline     bool       `json:"offline_mode,omitempty"`
-		Templates   []string   `json:"template_sources,omitempty"`
-		RenderCDN   string     `json:"render_cdn,omitempty"`
-	}{c.Providers, c.Models, c.Active, c.Thinking, c.AutoTitle, c.TitleModel, c.DisabledProviders, c.Backend, c.Language, c.Creght, c.RemoteCalls, c.Offline, c.TemplateSources, c.RenderCDN}, "", "  ")
+		Providers       []Provider        `json:"providers"`
+		Models          []LLM             `json:"models"`
+		Active          string            `json:"active_model,omitempty"`
+		Thinking        string            `json:"thinking,omitempty"`
+		AutoTitle       *bool             `json:"auto_title,omitempty"`
+		TitleModel      string            `json:"title_model,omitempty"`
+		BrowserModel    string            `json:"browser_model,omitempty"`
+		TitleThinking   string            `json:"title_thinking,omitempty"`
+		BrowserThinking string            `json:"browser_thinking,omitempty"`
+		BrowserDebug    bool              `json:"browser_debug,omitempty"`
+		Disabled        []string          `json:"disabled_providers,omitempty"`
+		Backend         string            `json:"backend,omitempty"`
+		Language        string            `json:"language,omitempty"`
+		Creght          string            `json:"creght,omitempty"`
+		RemoteCalls     bool              `json:"remote_calls,omitempty"`
+		RemoteTunnel    bool              `json:"remote_tunnel,omitempty"`
+		Offline         bool              `json:"offline_mode,omitempty"`
+		Templates       []string          `json:"template_sources,omitempty"`
+		RenderCDN       string            `json:"render_cdn,omitempty"`
+		Node            *NodeConfig       `json:"node,omitempty"`
+		CreghtCustom    map[string]string `json:"creght_custom,omitempty"`
+	}{c.Providers, c.Models, c.Active, c.Thinking, c.AutoTitle, c.TitleModel, c.BrowserModel, c.TitleThinking, c.BrowserThinking, c.BrowserDebug, c.DisabledProviders, c.Backend, c.Language, c.Creght, c.RemoteCalls, c.RemoteTunnel, c.Offline, c.TemplateSources, c.RenderCDN, nodeOrNil(c.Node), c.CreghtCustom}, "", "  ")
 	if err != nil {
 		return err
 	}

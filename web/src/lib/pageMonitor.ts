@@ -36,6 +36,8 @@ export function usePageMonitor(frame: HTMLIFrameElement | null, reload: () => vo
     const add = (e: PageError) => {
       // ResizeObserver loop …：浏览器的提示（回调里改了布局，通知推迟到下一帧），页面没坏，不算报错
       if (/^ResizeObserver loop /.test(e.message)) return
+      // 服务端部署时角色不够被拒（authz.go 的 403）：权限问题，不是页面的 bug
+      if (/你的角色没有这个权限|Your role doesn't allow this|只读账号只能跑|Read-only accounts can only run/.test(e.message)) return
       if (errors.length >= MAX || errors.some((x) => x.message === e.message)) return
       errors.push(e)
       report()
@@ -93,6 +95,8 @@ export function usePageMonitor(frame: HTMLIFrameElement | null, reload: () => vo
             report()
           }
           const list = w!.__TALIZEN_RENDER_ERRORS__
+          // 页面运行时撤回过报错（热更新改了 hooks、重新挂载救回来了，runtime.go）：列表变短了，从现在的长度往后读
+          if (Array.isArray(list) && list.length < seen) seen = list.length
           if (Array.isArray(list) && list.length > seen) {
             for (const it of list.slice(seen)) {
               if ((it.level ?? 'error') !== 'error') continue
